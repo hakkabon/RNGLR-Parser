@@ -4,20 +4,24 @@ A Swift implementation of the **Right Nulled Generalised LR (RNGLR)** parsing al
 
 The parser handles **all context-free grammars** — including ambiguous, left-recursive, and nullable ones — in worst-case *O(n³)* time while running in linear time on deterministic grammars. Grammar types are provided by the [Grammar](https://github.com/hakkabon/Grammar) package.
 
+[![Swift 5.9+](https://img.shields.io/badge/Swift-5.9%2B-orange.svg)](https://swift.org)  
+[![Platforms](https://img.shields.io/badge/platforms-macOS%2011%20%7C%20iOS%2014-blue.svg)](https://developer.apple.com/swift/)  
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)  
+
 ---
 
 ## Features
 
-| Feature | Description |
-|---|---|
-| **Full GLR parsing** | All CFGs including ambiguous and left-recursive |
-| **RNGLR right-null extension** | Nullable suffix productions handled correctly |
-| **InputTokenizer integration** | Grammar terminals auto-configure the tokenizer |
-| **BSR set** | Compact O(n²) internal record of all derivations |
-| **SPPF graph** | Shared Packed Parse Forest derived on demand |
-| **CST enumeration** | All concrete syntax trees from the SPPF |
-| **Ambiguity detection** | `ParseResult.hasAmbiguity` flag |
-| **Grammar package** | BNF/EBNF grammar import via `Grammar(bnf:start:)` |
+| Feature | Description |  
+|---|---|  
+| **Full GLR parsing** | All CFGs including ambiguous and left-recursive |  
+| **RNGLR right-null extension** | Nullable suffix productions handled correctly |  
+| **InputTokenizer integration** | Grammar terminals auto-configure the tokenizer |  
+| **BSR set** | Compact O(n²) internal record of all derivations |  
+| **SPPF graph** | Shared Packed Parse Forest derived on demand |  
+| **CST enumeration** | All concrete syntax trees from the SPPF |  
+| **Ambiguity detection** | `ParseResult.hasAmbiguity` flag |  
+| **Grammar package** | BNF/EBNF grammar import via `Grammar(bnf:start:)` |  
 
 ---
 
@@ -141,10 +145,10 @@ RNGLR-Parser (this package)
 
 `RNGLRParser` splits `grammar.terminals` into two buckets for `InputTokenizer`:
 
-| Bucket | Criterion | Example terminals | Tokenizer result |
-|---|---|---|---|
-| `terminalSymbols` | Contains any non-`[A-Za-z0-9_]` character | `"+"`, `"*"`, `"()"`, `"::="` | `.symbol("+")`  |
-| `reservedWords`   | Purely alphanumeric/underscore | `"id"`, `"while"`, `"true"` | `.keyword("id")` |
+| Bucket | Criterion | Example terminals | Tokenizer result |  
+|---|---|---|---|  
+| `terminalSymbols` | Contains any non-`[A-Za-z0-9_]` character | `"+"`, `"*"`, `"()"`, `"::="` | `.symbol("+")`  |  
+| `reservedWords`   | Purely alphanumeric/underscore | `"id"`, `"while"`, `"true"` | `.keyword("id")` |  
 
 Both `.keyword` and `.identifier` tokens map to their string payload via `tokenKey()`, so unregistered identifiers (like `x` in `x + y`) also match correctly when they appear as grammar terminals.
 
@@ -164,12 +168,12 @@ bsr.triples(lhs: nt, from: 0, to: 3)  // for a specific non-terminal and span
 ### SPPF Graph (derived)
 Four node kinds:
 
-| Node | Meaning |
-|---|---|
-| `symbol(name, l, r)` | Non-terminal `name` spans input[l, r) |
-| `terminal(symbol, l, r)` | Token string spans input[l, r) |
-| `intermediate(slot, l, r)` | Binarised partial RHS |
-| `packed(slot, pivot)` | One derivation alternative (ambiguity branch) |
+| Node | Meaning |  
+|---|---|  
+| `symbol(name, l, r)` | Non-terminal `name` spans input[l, r) |  
+| `terminal(symbol, l, r)` | Token string spans input[l, r) |  
+| `intermediate(slot, l, r)` | Binarised partial RHS |  
+| `packed(slot, pivot)` | One derivation alternative (ambiguity branch) |  
 
 Multiple packed children on a symbol/intermediate node = ambiguity.
 
