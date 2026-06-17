@@ -308,6 +308,7 @@ public final class RNGLRParser: Parser, GeneralizedParser {
         case .number(let n):      return n.description
         case .regex(let s):       return s
         case .eof:                return "$"
+        case .char:               return ""   // irrelevant
         case .comment:            return ""   // filtered before reaching parse loop
         case .invalid(let e):     return "\(e)"
         }
