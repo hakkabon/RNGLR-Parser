@@ -131,14 +131,19 @@ public final class RNGLRParser: Parser, GeneralizedParser {
 
         for i in 0..<n {
             let token   = tokens[i]
-            let termKey = tokenKey(token)   // String key into the ACTION table
+            let termKey = tokenKey(token)   // Original literal text: used for SPPF leaf labels and diagnostics
+            // ACTION-table lookup key: same as termKey for ordinary .string
+            // terminals, but resolved against the grammar's regex/range/list
+            // terminals when termKey is a token matching one of those patterns
+            // instead of a literal grammar symbol. See resolveActionKey(forToken:).
+            let lookupKey = automaton.resolveActionKey(forToken: termKey)
 
             // ── REDUCE phase ────────────────────────────────────────────────
             var reductions:         [Descriptor]    = []
             var processedReductions: Set<Descriptor> = []
 
             for node in frontier {
-                let acts = automaton.actions(state: node.state, terminal: termKey)
+                let acts = automaton.actions(state: node.state, terminal: lookupKey)
                 for act in acts {
                     if case .reduce(let prod) = act {
                         let d = Descriptor(node: node, prod: prod, extent: i)
@@ -153,7 +158,7 @@ public final class RNGLRParser: Parser, GeneralizedParser {
                 processReduce(
                     desc:       desc,
                     position:   i,
-                    termKey:    termKey,
+                    termKey:    lookupKey,
                     frontier:   &frontier,
                     reductions: &reductions,
                     processed:  &processedReductions
@@ -177,7 +182,7 @@ public final class RNGLRParser: Parser, GeneralizedParser {
             // ── SHIFT phase ──────────────────────────────────────────────────
             var nextFrontier: Set<GSSNode> = []
             for node in frontier {
-                let acts = automaton.actions(state: node.state, terminal: termKey)
+                let acts = automaton.actions(state: node.state, terminal: lookupKey)
                 for act in acts {
                     if case .shift(let nextState) = act {
                         // Terminal SPPF leaf carries the display string of the token.
@@ -265,6 +270,12 @@ public final class RNGLRParser: Parser, GeneralizedParser {
             case .characterRange:
                 // Character ranges are handled by the tokenizer natively.
                 break
+            case .stringList:
+                // List terminals (e.g. a lexical `"true" | "false"`
+                // declaration) are matched via LRAutomaton's pattern-terminal
+                // fallback (resolveActionKey(forToken:)), not the tokenizer's
+                // exact-string trie — nothing to register here either.
+                break
             case .meta:
                 // ε / $ are internal meta-terminals; never registered as operators.
                 break
@@ -321,7 +332,7 @@ public final class RNGLRParser: Parser, GeneralizedParser {
     private func processReduce(
         desc:       Descriptor,
         position:   Int,
-        termKey:    String,          // String key for the current look-ahead token
+        termKey:    String,          // Resolved ACTION-table lookup key for the current look-ahead token (see resolveActionKey(forToken:))
         frontier:   inout Set<GSSNode>,
         reductions: inout [Descriptor],
         processed:  inout Set<Descriptor>

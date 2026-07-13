@@ -328,6 +328,7 @@ extension GrammarSlot {
                 case .meta(let m):                return m.rawValue
                 case .regularExpression(let re):  return "/\(re.pattern)/"
                 case .characterRange(let r):      return "\(r.lowerBound)..\(r.upperBound)"
+                case .stringList(let list):       return list.joined(separator: "|")
                 }
             case .nonTerminal(let nt):            return nt.name
             case .metaSymbol(let ms):             return "\(ms)"

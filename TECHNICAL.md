@@ -63,7 +63,7 @@ Grammar.terminals: Set<Terminal>
 | ≥1 non-`[A-Za-z0-9_]` char | operators/punctuation | `terminalSymbols` | `.symbol(s)` |
 | all `[A-Za-z0-9_]` chars | reserved words | `reservedWords` | `.keyword(s)` |
 
-`Terminal.regularExpression`, `.characterRange`, and `.meta` cases are handled separately or ignored (meta-terminals like ε and $ are internal only).
+`Terminal.regularExpression`, `.characterRange`, and `.stringList` cases are not registered into either bucket — they're matched at lookup time via `LRAutomaton.resolveActionKey(forToken:)` (see below), not by the symbol/keyword trie. `.meta` is internal only (ε and $ never appear as tokenizer output).
 
 ### `tokenKey(_ token: Token) → String`
 
@@ -81,7 +81,11 @@ This function is the join point between the tokenizer and the LR table. It maps 
 | `.comment` | `""` (filtered before parse loop) |
 | `.invalid(e)` | `"\(e)"` (will be rejected by parser) |
 
-The LR automaton stores exactly `Terminal.string(s)` → `s` as the action key (via `LRAutomaton.terminalKey(_:Terminal)`). Since `tokenKey()` returns the same string `s` for the corresponding token type, the lookup `ACTION[state][tokenKey(token)]` succeeds without any special-case bridging.
+The LR automaton stores `Terminal.string(s)` → `s` as the action key (via `LRAutomaton.terminalKey(_:Terminal)`). Since `tokenKey()` returns the same string `s` for the corresponding token type, `ACTION[state][tokenKey(token)]` succeeds directly for every ordinary `.string` grammar terminal (operators, keywords, punctuation) — no bridging needed there.
+
+A `.regularExpression`/`.characterRange`/`.stringList` grammar terminal (e.g. one resolved from a `lexical { }` declaration, such as `NUM : /[0-9]+/`) is a different story: `terminalKey(_:)` on one of those returns the *pattern's own* text (a regex's source, a range's bounds, a list joined with `|`), which a concrete token's literal text (`tokenKey(token)`, e.g. `"42"`) can never equal by construction — `ACTION[state]["42"]` would silently miss the `NUM` column no matter how the token was classified upstream. `LRAutomaton.resolveActionKey(forToken:)` is the actual bridge: given a token's own key, it checks it against every one of the grammar's pattern terminals with `Terminal.matches(_:)` (the asymmetric pattern-vs-lexeme check — see the Grammar package) and, on a match, substitutes that pattern's own key before the table is queried. The parse loop calls this once per token and uses the resolved key for every `ACTION` lookup; the token's original literal text is kept separately for SPPF leaf labels and diagnostics, where the matched pattern's key would be the wrong (and confusing) thing to display.
+
+Caveat: if more than one pattern terminal could match the same token (e.g. a character-range terminal and a broader regex terminal both accepting a single digit), resolution picks whichever comes first in a fixed, deterministic (sorted-by-key) order — a coarse tie-break, not real disambiguation. A grammar that depends on choosing the *correct* one of several overlapping lexical terminals needs that decided upstream, by the lexer's own classification/priority rules.
 
 ### EOF sentinel
 
@@ -100,7 +104,7 @@ Grammar types are provided by [hakkabon/Grammar](https://github.com/hakkabon/Gra
 | Type | Definition | Notes |
 |---|---|---|
 | `NonTerminal` | `struct { name: String }` | Equatable, Hashable, Comparable |
-| `Terminal` | `enum { .string(String) \| .characterRange \| .regularExpression \| .meta(MetaTerminal) }` | Rich terminal type |
+| `Terminal` | `enum { .string(String) \| .characterRange \| .stringList([String]) \| .regularExpression \| .meta(MetaTerminal) }` | Rich terminal type |
 | `MetaTerminal` | `enum { .eps \| .lambda \| .eof \| .eop \| .empty }` | Internal epsilon/EOF markers |
 | `Symbol` | `enum { .terminal(Terminal) \| .nonTerminal(NonTerminal) \| .metaSymbol(MetaSymbol) }` | Unified symbol |
 | `Production` | `struct { goal: NonTerminal; rule: [Symbol] }` | One production rule |
@@ -179,6 +183,7 @@ This pre-computes all right-null reduces, allowing the parser to apply a complet
 |---|---|
 | `.string(s)` | `s` |
 | `.characterRange(r)` | `"\(r.lowerBound)...\(r.upperBound)"` |
+| `.stringList(list)` | `list.joined(separator: "|")` |
 | `.regularExpression(re)` | `re.pattern` |
 | `.meta(.eps / .empty / .lambda)` | `"ε"` |
 | `.meta(.eof / .eop)` | `"$"` |

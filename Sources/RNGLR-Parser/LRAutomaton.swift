@@ -66,6 +66,27 @@ public final class LRAutomaton {
     /// GOTO[state][nonTerminal] → next state  (-1 == error)
     public private(set) var goto: [[String: Int]] = []
 
+    /// Every grammar terminal that isn't `.string` — i.e. a `.regularExpression`,
+    /// `.characterRange`, or `.stringList` terminal, ordinarily one resolved
+    /// from a `lexical { }` declaration — paired with the same `terminalKey(_:)`
+    /// string its ACTION-table entries are actually stored under.
+    ///
+    /// `terminalKey(_:)` on a pattern terminal returns the *pattern's own*
+    /// text (a regex's source, a range's bounds, ...), not anything a
+    /// concrete token could ever equal — so `action[state][someToken]` can
+    /// never find these entries by a direct string lookup, regardless of
+    /// whether the token actually satisfies the pattern. `resolveActionKey(forToken:)`
+    /// is the bridge: it's what actually calls `Terminal.matches(_:)`.
+    ///
+    /// Sorted by key for deterministic iteration (`grammar.terminals` is a
+    /// `Set`, unordered) — this does not by itself resolve genuine ambiguity
+    /// between two pattern terminals that could both match the same token
+    /// (e.g. a `Digit` range and a `NUM` regex both accepting a single "5");
+    /// disambiguating that is a lexer-classification concern (see the Lexer
+    /// package's priority-tagged token classes), not something this fallback
+    /// can decide on its own.
+    private var patternTerminals: [(terminal: Terminal, key: String)] = []
+
     private let grammar: Grammar
     private var states: [ItemSet] = []
     private var kernelToState: [Set<GrammarSlot>: Int] = [:]
@@ -78,6 +99,16 @@ public final class LRAutomaton {
 
     public init(grammar: Grammar) {
         self.grammar = grammar
+        self.patternTerminals = grammar.terminals
+            .compactMap { terminal -> (Terminal, String)? in
+                switch terminal {
+                case .string, .meta:
+                    return nil
+                case .characterRange, .stringList, .regularExpression:
+                    return (terminal, LRAutomaton.terminalKey(terminal))
+                }
+            }
+            .sorted { $0.1 < $1.1 }
     }
 
     // MARK: - Build
@@ -295,6 +326,42 @@ public final class LRAutomaton {
         action[state][terminal] ?? []
     }
 
+    /// Resolves a token's own literal text (`tokenKey(_:)` on the `RNGLRParser`
+    /// side) to the key its matching ACTION-table entry is actually stored
+    /// under, for use with `actions(state:terminal:)`.
+    ///
+    /// For an ordinary `.string` grammar terminal (an operator, keyword, or
+    /// punctuation) `terminalKey(_:)` already equals the token's own text, so
+    /// this returns `token` unchanged and the fast, direct dictionary lookup
+    /// in `actions(state:terminal:)` still does all the work.
+    ///
+    /// For a `.regularExpression`/`.characterRange`/`.stringList` grammar
+    /// terminal (e.g. one resolved from a `lexical { }` declaration, such as
+    /// `NUM : /[0-9]+/`), `terminalKey(_:)` instead returns the *pattern's*
+    /// own text (`"[0-9]+"`), which a concrete token's literal text
+    /// (`"42"`) can never equal by construction — a plain dictionary lookup
+    /// keyed by the token's text would silently miss those entries no matter
+    /// how the token was actually classified upstream. This checks `token`
+    /// against every such pattern terminal with `Terminal.matches(_:)` (the
+    /// asymmetric pattern-vs-lexeme check — see the Grammar package) and, on
+    /// a match, returns *that pattern's* key instead, since that's what its
+    /// entries were filed under.
+    ///
+    /// Note: if more than one pattern terminal could match the same token
+    /// (e.g. both a character-range terminal and a broader regex terminal
+    /// accept a single digit), the first match in `patternTerminals`'
+    /// (deterministic, sorted-by-key) order wins. That's a coarse tie-break,
+    /// not a real disambiguation — a grammar that depends on picking the
+    /// *correct* one of several overlapping lexical terminals needs that
+    /// decided upstream, by the lexer's own classification/priority rules,
+    /// not here.
+    public func resolveActionKey(forToken token: String) -> String {
+        for (terminal, key) in patternTerminals where terminal.matches(.string(token)) {
+            return key
+        }
+        return token
+    }
+
     /// Returns the goto state after reducing to `nonTerminal` from `state`.
     public func gotoState(from state: Int, nonTerminal: String) -> Int? {
         goto[state][nonTerminal]
@@ -322,10 +389,11 @@ public final class LRAutomaton {
     }
 
     /// Convert a `Terminal` value to the string key used in the action table.
-    private func terminalKey(_ terminal: Terminal) -> String {
+    private static func terminalKey(_ terminal: Terminal) -> String {
         switch terminal {
         case .string(let s):             return s
         case .characterRange(let r):     return "\(r.lowerBound)...\(r.upperBound)"
+        case .stringList(let list):      return list.joined(separator: "|")
         case .regularExpression(let re): return re.pattern
         case .meta(let m):
             switch m {

@@ -185,6 +185,7 @@ public final class BSRSet {
         switch terminal {
         case .string(let s):                return s
         case .characterRange(let r):        return "\(r.lowerBound)...\(r.upperBound)"
+        case .stringList(let list):         return list.joined(separator: "|")
         case .regularExpression(let re):    return re.pattern
         case .meta(let m):                  return m.rawValue
         }
