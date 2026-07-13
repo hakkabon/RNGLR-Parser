@@ -170,7 +170,7 @@ public final class LRAutomaton {
         case .terminal(let t):
             if case .meta(.eps) = t { return ["ε"] }
             if case .meta(.empty) = t { return ["ε"] }
-            return [terminalKey(t)]
+            return [LRAutomaton.terminalKey(t)]
         case .nonTerminal(let nt):
             return firstOfNT(nt)
         case .metaSymbol:
@@ -264,7 +264,7 @@ public final class LRAutomaton {
                 guard let targetID = kernelToState[kernelItems] else { continue }
                 switch sym {
                 case .terminal(let t):
-                    let key = terminalKey(t)
+                    let key = LRAutomaton.terminalKey(t)
                     if key != "ε" {
                         action[state.id][key, default: []].insert(.shift(targetID))
                     }
@@ -356,7 +356,7 @@ public final class LRAutomaton {
     /// decided upstream, by the lexer's own classification/priority rules,
     /// not here.
     public func resolveActionKey(forToken token: String) -> String {
-        for (terminal, key) in patternTerminals where terminal.matches(.string(token)) {
+        for (terminal, key) in patternTerminals where terminal.matches(.string(string: token)) {
             return key
         }
         return token
