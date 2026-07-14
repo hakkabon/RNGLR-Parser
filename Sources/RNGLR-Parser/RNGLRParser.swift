@@ -486,17 +486,35 @@ extension CSTNode: CustomStringConvertible {
 public final class CSTEnumerator {
     private let graph: SPPFGraph
 
+    /// Caches the fully-computed result for each node once its subtree
+    /// enumeration finishes. Without this, a node reached via more than one
+    /// ambiguous parent — which is the entire point of a *shared* packed
+    /// parse forest — has its whole subtree recomputed from scratch every
+    /// time, so the cost of enumeration tracks the number of distinct
+    /// derivations (which grows combinatorially, e.g. Catalan numbers for
+    /// `S ::= S S | 'a'`) rather than the size of the graph itself.
+    ///
+    /// This is safe together with the cycle guard below: a node only ever
+    /// gets a memo entry once its computation has *fully* finished, and a
+    /// node that's still mid-computation (an ancestor of itself, i.e. a
+    /// genuine cycle) can't have a memo entry yet — so checking the cache
+    /// first never masks a real cycle, it only skips recomputing something
+    /// already known to be acyclic and complete.
+    private var memo: [SPPFNode: [[CSTNode]]] = [:]
+
     public init(graph: SPPFGraph) { self.graph = graph }
 
     /// Returns every parse tree rooted at `node` as a flat list of `CSTNode` forests.
     public func trees(for node: SPPFNode,
                       visited: inout Set<SPPFNode>) -> [[CSTNode]] {
+        if let cached = memo[node] { return cached }
         guard visited.insert(node).inserted else { return [] }
         defer { visited.remove(node) }
 
+        let result: [[CSTNode]]
         switch node {
         case .terminal(let s, let l, let r):
-            return [[.terminal(symbol: s, extent: l...r)]]
+            result = [[.terminal(symbol: s, extent: l...r)]]
 
         case .symbol(let name, let l, let r):
             var allTrees: [[CSTNode]] = []
@@ -512,7 +530,7 @@ public final class CSTEnumerator {
                     allTrees.append([cst])
                 }
             }
-            return allTrees
+            result = allTrees
 
         case .intermediate:
             var allChildren: [[CSTNode]] = [[]]
@@ -520,11 +538,14 @@ public final class CSTEnumerator {
                 allChildren = cartesianAppend(allChildren,
                                               childrenOfPacked(pack, visited: &visited))
             }
-            return allChildren
+            result = allChildren
 
         case .packed:
-            return childrenOfPacked(node, visited: &visited)
+            result = childrenOfPacked(node, visited: &visited)
         }
+
+        memo[node] = result
+        return result
     }
 
     private func childrenOfPacked(_ pack: SPPFNode,
