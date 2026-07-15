@@ -110,25 +110,26 @@ public final class BSRSet {
             // comment for why this has to be "every", not just one.
             attachDerivations(to: symNode, production: prod,
                                leftExtent: triple.leftExtent, rightExtent: triple.rightExtent,
-                               graph: graph, stepsDone: &stepsDone)
+                               grammar: grammar, graph: graph, stepsDone: &stepsDone)
         }
     }
 
     private func attachDerivations(to parent: SPPFNode, production: Production,
                                     leftExtent: Int, rightExtent: Int,
-                                    graph: SPPFGraph, stepsDone: inout Set<StepKey>) {
+                                    grammar: Grammar, graph: SPPFGraph,
+                                    stepsDone: inout Set<StepKey>) {
         let rule = production.rule
 
         // ε production (or a lone epsilon meta-terminal): one packed node, no children.
         if rule.isEmpty || (rule.count == 1 && isEpsilonSymbol(rule[0])) {
-            let packed = graph.intern(SPPFNode.packed(slot: GrammarSlot(production: production, dot: rule.count), pivot: leftExtent))
+            let packed = graph.intern(SPPFNode.packed(slot: GrammarSlot(production: production, dot: rule.count), pivot: leftExtent, leftExtent: leftExtent, rightExtent: rightExtent))
             graph.addChild(packed, to: parent)
             return
         }
 
         attachSymbol(idx: rule.count - 1, rule: rule, production: production,
                      parent: parent, leftExtent: leftExtent, right: rightExtent,
-                     graph: graph, stepsDone: &stepsDone)
+                     grammar: grammar, graph: graph, stepsDone: &stepsDone)
     }
 
     /// Resolves `rule[idx]` (walking right-to-left, per the binarisation
@@ -146,19 +147,20 @@ public final class BSRSet {
     /// mis-counting) ambiguous parses.
     private func attachSymbol(idx: Int, rule: [Symbol], production: Production,
                                parent: SPPFNode, leftExtent: Int, right: Int,
-                               graph: SPPFGraph, stepsDone: inout Set<StepKey>) {
+                               grammar: Grammar, graph: SPPFGraph,
+                               stepsDone: inout Set<StepKey>) {
         let sym = rule[idx]
 
         // Residual EBNF meta-symbols and epsilon meta-terminals occupy no
         // span; skip straight to the next symbol to the left (or finish).
         if isEpsilonSymbol(sym) || isMetaSymbol(sym) {
             if idx == 0 {
-                let packed = graph.intern(SPPFNode.packed(slot: GrammarSlot(production: production, dot: 0), pivot: right))
+                let packed = graph.intern(SPPFNode.packed(slot: GrammarSlot(production: production, dot: 0), pivot: right, leftExtent: leftExtent, rightExtent: right))
                 graph.addChild(packed, to: parent)
             } else {
                 attachSymbol(idx: idx - 1, rule: rule, production: production,
                              parent: parent, leftExtent: leftExtent, right: right,
-                             graph: graph, stepsDone: &stepsDone)
+                             grammar: grammar, graph: graph, stepsDone: &stepsDone)
             }
             return
         }
@@ -174,8 +176,10 @@ public final class BSRSet {
             let matches = triples.filter {
                 $0.slot.isCompleted && $0.slot.production.goal == nt && $0.rightExtent == right
             }
-            if matches.isEmpty {
-                // Nullable: zero-width node, no ambiguity possible here.
+            if matches.isEmpty && grammar.nullableNonTerminals.contains(nt) {
+                // A missing completed span represents ε only for a genuinely
+                // nullable non-terminal. Treating every missing span as ε
+                // creates self-referential SPPF edges for recursive grammars.
                 candidates = [(graph.intern(SPPFNode.symbol(name: nt.name, leftExtent: right, rightExtent: right)), right)]
             } else {
                 candidates = matches.map {
@@ -188,11 +192,22 @@ public final class BSRSet {
         }
 
         for (childNode, newRight) in candidates {
+            // A non-empty prefix must consume input before the final RHS
+            // symbol begins. Without this guard, a candidate equal to the
+            // parent span creates a packed node that points back to its own
+            // symbol node (S → S S is the canonical example). Such a cycle
+            // is not a derivation; it is only legal when the whole prefix can
+            // genuinely derive ε.
+            if idx > 0,
+               newRight == leftExtent,
+               !symbolsCanDeriveEmpty(Array(rule[..<idx]), grammar: grammar) {
+                continue
+            }
             if idx == 0 {
                 // First symbol of the RHS: valid only if it actually reaches
                 // back to the production's own left edge.
                 guard newRight == leftExtent else { continue }
-                let packed = graph.intern(SPPFNode.packed(slot: GrammarSlot(production: production, dot: 0), pivot: newRight))
+                let packed = graph.intern(SPPFNode.packed(slot: GrammarSlot(production: production, dot: 0), pivot: newRight, leftExtent: leftExtent, rightExtent: right))
                 graph.addChild(packed, to: parent)
                 graph.addChild(childNode, to: packed)
             } else {
@@ -202,7 +217,7 @@ public final class BSRSet {
                 // dropping every RHS symbol except the last from the tree.)
                 let prefixSlot = GrammarSlot(production: production, dot: idx)
                 let intNode = graph.intern(SPPFNode.intermediate(slot: prefixSlot, leftExtent: leftExtent, rightExtent: newRight))
-                let packed  = graph.intern(SPPFNode.packed(slot: GrammarSlot(production: production, dot: idx + 1), pivot: newRight))
+                let packed  = graph.intern(SPPFNode.packed(slot: GrammarSlot(production: production, dot: idx + 1), pivot: newRight, leftExtent: leftExtent, rightExtent: right))
                 graph.addChild(packed, to: parent)
                 graph.addChild(intNode, to: packed)
                 graph.addChild(childNode, to: packed)
@@ -211,7 +226,7 @@ public final class BSRSet {
                 if stepsDone.insert(step).inserted {
                     attachSymbol(idx: idx - 1, rule: rule, production: production,
                                  parent: intNode, leftExtent: leftExtent, right: newRight,
-                                 graph: graph, stepsDone: &stepsDone)
+                                 grammar: grammar, graph: graph, stepsDone: &stepsDone)
                 }
             }
         }
@@ -227,6 +242,21 @@ public final class BSRSet {
     private func isMetaSymbol(_ sym: Symbol) -> Bool {
         if case .metaSymbol = sym { return true }
         return false
+    }
+
+    private func symbolsCanDeriveEmpty(_ symbols: [Symbol], grammar: Grammar) -> Bool {
+        symbols.allSatisfy { symbol in
+            switch symbol {
+            case .terminal(let terminal):
+                if case .meta(.eps) = terminal { return true }
+                if case .meta(.empty) = terminal { return true }
+                return false
+            case .nonTerminal(let nonTerminal):
+                return grammar.nullableNonTerminals.contains(nonTerminal)
+            case .metaSymbol:
+                return true
+            }
+        }
     }
 
     /// Extract the display string for a Terminal value.

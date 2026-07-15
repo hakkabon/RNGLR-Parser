@@ -117,7 +117,8 @@ final class RNGLRParserTests: XCTestCase {
         let nullable = grammar.nullableNonTerminals
         XCTAssertTrue(nullable.contains(NonTerminal(name: "A")))
         XCTAssertTrue(nullable.contains(NonTerminal(name: "B")))
-        XCTAssertFalse(nullable.contains(NonTerminal(name: "S")))
+        XCTAssertTrue(nullable.contains(NonTerminal(name: "S")),
+                      "S is nullable because both A and B can derive ε")
     }
 
     func testNullableTransitive() throws {

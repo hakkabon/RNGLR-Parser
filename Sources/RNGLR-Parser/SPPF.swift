@@ -38,8 +38,10 @@ public indirect enum SPPFNode: Hashable {
     /// A packed node — one alternative derivation.
     /// Always a child of either a symbol or intermediate node.
     ///   `slot`  is the completed or intermediate grammar slot
-    ///   `pivot` is the split point in the input
-    case packed(slot: GrammarSlot, pivot: Int)
+    ///   `pivot` is the split point in the input. The parent extents are part
+    ///   of the identity: the same production and pivot can occur beneath
+    ///   several distinct symbol/intermediate nodes.
+    case packed(slot: GrammarSlot, pivot: Int, leftExtent: Int, rightExtent: Int)
 
     // MARK: Extent accessors (packed nodes have no extent of their own)
 
@@ -68,7 +70,7 @@ extension SPPFNode: CustomStringConvertible {
         case .terminal(let s, let l, let r):       return "Term(\(s),\(l),\(r))"
         case .symbol(let n, let l, let r):         return "Sym(\(n),\(l),\(r))"
         case .intermediate(let sl, let l, let r):  return "Int(\(sl),\(l),\(r))"
-        case .packed(let sl, let k):               return "Pack(\(sl),k=\(k))"
+        case .packed(let sl, let k, let l, let r): return "Pack(\(sl),k=\(k),[\(l),\(r)))"
         }
     }
 }

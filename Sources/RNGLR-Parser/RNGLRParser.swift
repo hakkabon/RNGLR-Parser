@@ -486,28 +486,11 @@ extension CSTNode: CustomStringConvertible {
 public final class CSTEnumerator {
     private let graph: SPPFGraph
 
-    /// Caches the fully-computed result for each node once its subtree
-    /// enumeration finishes. Without this, a node reached via more than one
-    /// ambiguous parent — which is the entire point of a *shared* packed
-    /// parse forest — has its whole subtree recomputed from scratch every
-    /// time, so the cost of enumeration tracks the number of distinct
-    /// derivations (which grows combinatorially, e.g. Catalan numbers for
-    /// `S ::= S S | 'a'`) rather than the size of the graph itself.
-    ///
-    /// This is safe together with the cycle guard below: a node only ever
-    /// gets a memo entry once its computation has *fully* finished, and a
-    /// node that's still mid-computation (an ancestor of itself, i.e. a
-    /// genuine cycle) can't have a memo entry yet — so checking the cache
-    /// first never masks a real cycle, it only skips recomputing something
-    /// already known to be acyclic and complete.
-    private var memo: [SPPFNode: [[CSTNode]]] = [:]
-
     public init(graph: SPPFGraph) { self.graph = graph }
 
     /// Returns every parse tree rooted at `node` as a flat list of `CSTNode` forests.
     public func trees(for node: SPPFNode,
                       visited: inout Set<SPPFNode>) -> [[CSTNode]] {
-        if let cached = memo[node] { return cached }
         guard visited.insert(node).inserted else { return [] }
         defer { visited.remove(node) }
 
@@ -519,7 +502,7 @@ public final class CSTEnumerator {
         case .symbol(let name, let l, let r):
             var allTrees: [[CSTNode]] = []
             for pack in graph.children(of: node) {
-                guard case .packed(let slot, _) = pack else { continue }
+                guard case .packed(let slot, _, _, _) = pack else { continue }
                 for childList in childrenOfPacked(pack, visited: &visited) {
                     let cst = CSTNode.nonTerminal(
                         symbol:     name,
@@ -533,10 +516,12 @@ public final class CSTEnumerator {
             result = allTrees
 
         case .intermediate:
-            var allChildren: [[CSTNode]] = [[]]
+            var allChildren: [[CSTNode]] = []
             for pack in graph.children(of: node) {
-                allChildren = cartesianAppend(allChildren,
-                                              childrenOfPacked(pack, visited: &visited))
+                // Packed children are alternative derivations, rather than
+                // sequential RHS fragments. Combining them as a Cartesian
+                // product makes compact Catalan forests explode exponentially.
+                allChildren.append(contentsOf: childrenOfPacked(pack, visited: &visited))
             }
             result = allChildren
 
@@ -544,7 +529,6 @@ public final class CSTEnumerator {
             result = childrenOfPacked(node, visited: &visited)
         }
 
-        memo[node] = result
         return result
     }
 
@@ -559,7 +543,7 @@ public final class CSTEnumerator {
 
     private func cartesianAppend(_ prefixes: [[CSTNode]],
                                   _ suffixes: [[CSTNode]]) -> [[CSTNode]] {
-        guard !suffixes.isEmpty else { return prefixes }
+        guard !prefixes.isEmpty, !suffixes.isEmpty else { return [] }
         var result: [[CSTNode]] = []
         for pre in prefixes {
             for suf in suffixes { result.append(pre + suf) }

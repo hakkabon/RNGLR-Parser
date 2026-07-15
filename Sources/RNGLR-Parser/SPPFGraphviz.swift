@@ -236,7 +236,7 @@ private struct SPPFDotRenderer {
             .filter { if case .packed = $0 { return true }; return false }
             .sorted { $0.stableKey < $1.stableKey }
             .map { node -> String in
-                guard case .packed(let slot, let pivot) = node,
+                guard case .packed(let slot, let pivot, _, _) = node,
                       let id = index[node] else { return "" }
                 let label = dotLabel("\(slot.dotLabel)\nk=\(pivot)")
                 return "n\(id) [shape=diamond style=filled fillcolor=\"#f8cecc\" label=\(label)]"
@@ -262,7 +262,7 @@ private struct SPPFDotRenderer {
                     // Symbol / intermediate → packed: solid black arrow
                     result.append("n\(parentID) -> n\(childID) [style=solid arrowhead=normal]")
 
-                case .packed(_, let pivot):
+                case .packed(_, let pivot, _, _):
                     // Packed → child: dashed, label shows pivot
                     result.append("n\(parentID) -> n\(childID) [style=dashed label=\"\(pivot)\" arrowhead=open]")
 
@@ -309,7 +309,7 @@ extension SPPFNode {
         case .terminal(let s, let l, let r):     return "0t_\(s)_\(l)_\(r)"
         case .symbol(let n, let l, let r):       return "1s_\(n)_\(l)_\(r)"
         case .intermediate(let sl, let l, let r):return "2i_\(sl.stableKey)_\(l)_\(r)"
-        case .packed(let sl, let k):             return "3p_\(sl.stableKey)_\(k)"
+        case .packed(let sl, let k, let l, let r): return "3p_\(sl.stableKey)_\(k)_\(l)_\(r)"
         }
     }
 }
@@ -340,6 +340,10 @@ extension GrammarSlot {
 
     /// Stable sort key for a GrammarSlot (used by SPPFNode.stableKey).
     fileprivate var stableKey: String {
-        "\(production.goal.name)_\(dot)"
+        // The goal and dot position alone collide for different productions
+        // (for example E → T and E → E + T at dot 0), leaving Set iteration
+        // to decide their output order. Include the RHS to form a total key.
+        let rule = production.rule.map { String(describing: $0) }.joined(separator: "_")
+        return "\(production.goal.name)_\(rule)_\(dot)"
     }
 }

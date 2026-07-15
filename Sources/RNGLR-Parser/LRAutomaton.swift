@@ -210,8 +210,13 @@ public final class LRAutomaton {
                 }
             }
             for (_, kernelItems) in bySymbol {
+                let stateCountBefore = states.count
                 let newState = makeState(kernel: kernelItems)
-                if newState.id == states.count - 1 {
+                // State identity alone cannot tell whether makeState created a
+                // node: an existing state may happen to be the final entry in
+                // `states`. Re-adding it to the worklist makes LR(0) states
+                // with a self-loop (for example S → S S) run forever.
+                if states.count > stateCountBefore {
                     worklist.append(newState.id)
                 }
             }
