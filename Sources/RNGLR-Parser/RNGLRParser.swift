@@ -87,18 +87,22 @@ public final class RNGLRParser: Parser, GeneralizedParser {
     // MARK: - Parser protocol
 
     public func syntaxTree(for string: String) throws -> ParseTree {
+        let tokens = tokenize(string)
+        let tokenCount = tokens.filter { $0.type != .eof }.count
         switch try parse(string) {
         case .success(let bsr, let sppf):
-            return buildParseTree(bsr: bsr, sppf: sppf)
+            return buildParseTree(bsr: bsr, sppf: sppf, tokenCount: tokenCount)
         case .failure(_, let msg):
             throw ParseError.generationFailed(msg)
         }
     }
 
     public func allSyntaxTrees(for string: String) throws -> [ParseTree] {
+        let tokens = tokenize(string)
+        let tokenCount = tokens.filter { $0.type != .eof }.count
         switch try parse(string) {
         case .success(_, let sppf):
-            return buildAllParseTrees(sppf: sppf)
+            return buildAllParseTrees(sppf: sppf, tokenCount: tokenCount)
         case .failure(_, let msg):
             throw ParseError.generationFailed(msg)
         }
@@ -374,12 +378,16 @@ public final class RNGLRParser: Parser, GeneralizedParser {
     }
 
     /// Number of GSS edges to pop for `prod`.
-    /// Epsilon productions (empty rule or sole `.meta(.eps)` symbol) pop 0 edges.
+    /// Epsilon productions (empty rule, or rule consisting solely of epsilon
+    /// meta-terminals: `.meta(.eps)`, `.meta(.empty)`, or `.meta(.lambda)`) pop 0 edges.
     private func effectivePopCount(_ prod: Production) -> Int {
         if prod.rule.isEmpty { return 0 }
         let allEps = prod.rule.allSatisfy { sym in
-            if case .terminal(let t) = sym, case .meta(.eps) = t { return true }
-            return false
+            guard case .terminal(let t) = sym else { return false }
+            switch t {
+            case .meta(.eps), .meta(.empty), .meta(.lambda): return true
+            default: return false
+            }
         }
         return allEps ? 0 : prod.rule.count
     }
@@ -411,9 +419,9 @@ public final class RNGLRParser: Parser, GeneralizedParser {
 
     // MARK: - SyntaxTree construction helpers
 
-    private func buildParseTree(bsr: BSRSet, sppf: SPPFGraph) -> ParseTree {
+    private func buildParseTree(bsr: BSRSet, sppf: SPPFGraph, tokenCount: Int) -> ParseTree {
         let startName = grammar.start.name
-        guard let root = sppf.root(startSymbol: startName, inputLength: sppf.allNodes.count) else {
+        guard let root = sppf.root(startSymbol: startName, inputLength: tokenCount) else {
             return .empty
         }
         let enumerator = CSTEnumerator(graph: sppf)
@@ -424,9 +432,9 @@ public final class RNGLRParser: Parser, GeneralizedParser {
         } ?? .empty
     }
 
-    private func buildAllParseTrees(sppf: SPPFGraph) -> [ParseTree] {
+    private func buildAllParseTrees(sppf: SPPFGraph, tokenCount: Int) -> [ParseTree] {
         let startName = grammar.start.name
-        guard let root = sppf.root(startSymbol: startName, inputLength: sppf.allNodes.count) else {
+        guard let root = sppf.root(startSymbol: startName, inputLength: tokenCount) else {
             return []
         }
         let enumerator = CSTEnumerator(graph: sppf)
@@ -439,8 +447,15 @@ public final class RNGLRParser: Parser, GeneralizedParser {
 
     private func cstToParseTree(_ node: CSTNode) -> ParseTree {
         switch node {
-        case .terminal:
-            return .empty   // leaf: no String.Index range available from token index
+        case .terminal(let symbol, _):
+            // Terminal leaves carry their token string as a NonTerminal label so the
+            // tree structure is preserved.  (ParseTree = SyntaxTree<NonTerminal, …>
+            // has no leaf type that holds a raw string, so we wrap the symbol name
+            // in a synthetic NonTerminal.  Callers that need the actual token text
+            // can inspect the NonTerminal.name on leaf nodes whose children array
+            // is empty.)
+            let nt = NonTerminal(name: symbol)
+            return .node(nt, children: [])
         case .nonTerminal(let sym, _, let children, _):
             let nt = NonTerminal(name: sym)
             return .node(nt, children: children.map { cstToParseTree($0) })

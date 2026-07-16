@@ -93,7 +93,7 @@ Caveat: if more than one pattern terminal could match the same token (e.g. a cha
 
 ### Input length
 
-The SPPF root is looked up as `sppf.root(startSymbol:inputLength:)`. `inputLength` is the count of real tokens — i.e. `tokens.filter { $0.type != .eof }.count` — not the total `tokens.count` which includes the sentinel.
+The SPPF root is looked up as `sppf.root(startSymbol:inputLength:)`. `inputLength` must be the count of real tokens — i.e. `tokens.filter { $0.type != .eof }.count` — not the total `tokens.count` (which includes the EOF sentinel), and definitely not a proxy like `sppf.allNodes.count` (which is the number of nodes in the forest, an unrelated quantity). `syntaxTree(for:)` and `allSyntaxTrees(for:)` compute the token count once during tokenisation and thread it through to the root lookup, so callers of those methods do not need to supply it. Callers working directly with the `ParseResult.success(bsr:sppf:)` value — as in the demo harness and test helpers — must supply it explicitly.
 
 ---
 
@@ -345,12 +345,22 @@ Step 7 propagates reductions through newly-created edges without re-processing a
 ```swift
 private func effectivePopCount(_ prod: Production) -> Int {
     if prod.rule.isEmpty { return 0 }
-    let allEps = prod.rule.allSatisfy { if case .terminal(let t) = $0, case .meta(.eps) = t { return true }; return false }
+    let allEps = prod.rule.allSatisfy { sym in
+        guard case .terminal(let t) = sym else { return false }
+        switch t {
+        case .meta(.eps), .meta(.empty), .meta(.lambda): return true
+        default: return false
+        }
+    }
     return allEps ? 0 : prod.rule.count
 }
 ```
 
-Epsilon productions (empty rule or sole `.meta(.eps)` symbol) pop 0 GSS edges.
+Epsilon productions pop 0 GSS edges.  The check covers all three epsilon
+meta-terminal variants used by the Grammar package: `.meta(.eps)`,
+`.meta(.empty)`, and `.meta(.lambda)`.  An earlier version only recognised
+`.meta(.eps)`, causing the wrong pop count for productions written with the
+other two forms.
 
 ---
 
@@ -394,7 +404,16 @@ public protocol Parser {
 
 `ParseTree = SyntaxTree<NonTerminal, Range<String.Index>>`
 
-`RNGLRParser` implements this by calling `parse(_:)` and extracting the first tree from the SPPF.
+`RNGLRParser` implements this by tokenising the source, calling `parse(_:)`,
+and extracting the first tree from the SPPF.  The token count computed during
+tokenisation is passed directly to `sppf.root(startSymbol:inputLength:)` so
+the root lookup always uses the number of real (non-EOF) tokens — not an
+unrelated proxy like the SPPF node count.
+
+Terminal leaves in the resulting `ParseTree` are represented as childless
+`.node(NonTerminal(name: symbol), children: [])` nodes, where `symbol` is
+the token's surface string.  This preserves full tree structure; callers can
+distinguish leaf nodes from interior nodes by checking `children.isEmpty`.
 
 ### `GeneralizedParser` (GenerlizedParser.swift)
 
@@ -436,7 +455,8 @@ The `throws` annotation signals that the tokenizer layer (not the GLR algorithm 
 3. **No regex terminal matching at parse time** — `Terminal.regularExpression` values are registered but not used to classify tokens on-the-fly. A custom `TokenStream` subclass would be needed.
 4. **CST materialises all trees** — For highly ambiguous grammars, memory usage can be exponential. A lazy `AsyncSequence` iterator is the planned fix.
 5. **`syntaxTree(for:)` returns the first tree only** — The `Parser` protocol is a single-tree interface by definition; use `allSyntaxTrees(for:)` or work directly with the SPPF for multiple trees.
-6. **No error recovery** — The parse stops at the first position where all frontier heads fail. Panic-mode recovery is a planned addition.
+6. **Terminal leaves in `ParseTree`** — Because `ParseTree = SyntaxTree<NonTerminal, Range<String.Index>>` has no dedicated leaf type for raw strings, terminal nodes are emitted as childless `.node` entries whose `NonTerminal.name` holds the token's surface string. They can be identified at call-site by `children.isEmpty`. A richer leaf type (e.g. `SyntaxTree<NonTerminal, Token>`) would make this distinction explicit.
+7. **No error recovery** — The parse stops at the first position where all frontier heads fail. Panic-mode recovery is a planned addition.
 
 ---
 
