@@ -60,6 +60,13 @@ extension GrammarTool {
                 let tree = try parser.syntaxTree(for: input).mapLeafs { String(input[$0]) }
                 print(tree)
 
+            case .trees:
+                let trees = try parser.allSyntaxTrees(for: input)
+                for tree in trees {
+                    let parsetree = tree.mapLeafs{ String(input[$0]) }
+                    print("\(parsetree)")
+                }
+
             case .graph:
                 let tree = try parser.syntaxTree(for: input).mapLeafs { String(input[$0]) }
                 let dotSource = tree.graphviz

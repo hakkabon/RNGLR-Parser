@@ -40,7 +40,7 @@ enum Method: String, ExpressibleByArgument, CaseIterable {
 
 /// Parsing method to be applied to input supplied by user.
 enum Analysis: String, ExpressibleByArgument, CaseIterable {
-    case tree, graph, sppf
+    case tree, trees, graph, sppf
 }
 
 /// Source input is either a command line argument or a file containing the input to be parsed.
