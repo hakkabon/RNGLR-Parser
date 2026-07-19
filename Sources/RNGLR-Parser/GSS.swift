@@ -15,6 +15,7 @@
 
 import Foundation
 import Grammar
+import Parser
 
 // MARK: - GSS Node
 
@@ -35,7 +36,7 @@ public final class GSSNode: Hashable {
     /// Add an edge to `target`, labelled with `sppfNode`.
     /// Returns `true` if this is a new edge (not already present).
     @discardableResult
-    func addEdge(to target: GSSNode, label: SPPFNode?) -> Bool {
+    func addEdge(to target: GSSNode, label: SPPFNode<GrammarSlot>?) -> Bool {
         let edge = GSSEdge(from: self, to: target, label: label)
         if edges.contains(edge) { return false }
         edges.append(edge)
@@ -64,7 +65,7 @@ extension GSSNode: CustomStringConvertible {
 public struct GSSEdge: Hashable {
     public let from: GSSNode        // node closer to stack top
     public let to: GSSNode          // node closer to stack bottom
-    public let label: SPPFNode?     // SPPF node produced when this frame was pushed
+    public let label: SPPFNode<GrammarSlot>?     // SPPF node produced when this frame was pushed
 
     /// Equality ignores `label`: only the (from, to) pair determines identity,
     /// so duplicate edges are detected correctly; the label of the first edge is kept.
@@ -101,7 +102,7 @@ public final class GSS {
 
     /// Convenience: create an edge and return whether it was newly added.
     @discardableResult
-    public func addEdge(from: GSSNode, to: GSSNode, label: SPPFNode?) -> Bool {
+    public func addEdge(from: GSSNode, to: GSSNode, label: SPPFNode<GrammarSlot>?) -> Bool {
         from.addEdge(to: to, label: label)
     }
 

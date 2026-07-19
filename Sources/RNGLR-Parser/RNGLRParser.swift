@@ -9,6 +9,7 @@
 import Foundation
 import Grammar
 import Tokenizer
+import Parser
 
 // MARK: - Descriptor
 
@@ -59,7 +60,8 @@ private struct Descriptor: Hashable {
 //   • `gss`:          the Graph Structured Stack
 //   • `bsr`:          the BSR set
 
-public final class RNGLRParser: Parser, GeneralizedParser {
+public final class RNGLRParser: DeterministicParser, GeneralizedParser {
+    public typealias Label = GrammarSlot
 
     private let grammar:   Grammar
     private let automaton: LRAutomaton
@@ -67,6 +69,12 @@ public final class RNGLRParser: Parser, GeneralizedParser {
     // Persistent GSS and BSR – reset on each parse() call.
     private let gss: GSS    = GSS()
     private let bsr: BSRSet = BSRSet()
+
+    /// Diagnostic message from the most recent failed `parse(_:)` call, used
+    /// to build an informative `ParseError` from `syntaxTree(for:)` /
+    /// `allSyntaxTrees(for:)` without widening `ParseResult` itself with a
+    /// message field only this parser needs.
+    private var lastFailureMessage: String?
 
     // MARK: - Initialisation
 
@@ -84,28 +92,30 @@ public final class RNGLRParser: Parser, GeneralizedParser {
         self.automaton = automaton
     }
 
-    // MARK: - Parser protocol
+    // MARK: - DeterministicParser / GeneralizedParser protocols
 
     public func syntaxTree(for string: String) throws -> ParseTree {
-        let tokens = tokenize(string)
-        let tokenCount = tokens.filter { $0.type != .eof }.count
-        switch try parse(string) {
-        case .success(let bsr, let sppf):
-            return buildParseTree(bsr: bsr, sppf: sppf, tokenCount: tokenCount)
-        case .failure(_, let msg):
-            throw ParseError.generationFailed(msg)
+        let ranges = tokenRanges(for: string)
+        let result = try parse(string)
+        guard result.isSuccessful, let sppfGraph = result.sppfGraph else {
+            throw ParseError.generationFailed(lastFailureMessage ?? "Parse failed.")
         }
+        return sppfGraph.buildParseTree(startSymbol: grammar.start.name, ranges: ranges, string: string)
     }
 
     public func allSyntaxTrees(for string: String) throws -> [ParseTree] {
-        let tokens = tokenize(string)
-        let tokenCount = tokens.filter { $0.type != .eof }.count
-        switch try parse(string) {
-        case .success(_, let sppf):
-            return buildAllParseTrees(sppf: sppf, tokenCount: tokenCount)
-        case .failure(_, let msg):
-            throw ParseError.generationFailed(msg)
+        let ranges = tokenRanges(for: string)
+        let result = try parse(string)
+        guard result.isSuccessful, let sppfGraph = result.sppfGraph else {
+            throw ParseError.generationFailed(lastFailureMessage ?? "Parse failed.")
         }
+        return sppfGraph.buildAllParseTrees(startSymbol: grammar.start.name, ranges: ranges, string: string)
+    }
+
+    /// The source ranges of every non-EOF token in `string`, in order —
+    /// exactly the sequence of positions the RNGLR algorithm shifts over.
+    private func tokenRanges(for string: String) -> [Range<String.Index>] {
+        tokenize(string).filter { $0.type != .eof }.map(\.range)
     }
 
     // MARK: - GeneralizedParser protocol
@@ -113,12 +123,15 @@ public final class RNGLRParser: Parser, GeneralizedParser {
     /// Parse `source` text using the tokenizer derived from the grammar's
     /// terminal vocabulary, then run the RNGLR algorithm.
     ///
-    /// Returns `.success(bsr:sppf:)` on acceptance or `.failure(position:message:)`.
-    /// Throws `ParseError` only for tokenizer-level failures (e.g. unrecognised characters
-    /// that cannot be represented as any valid terminal).
-    public func parse(_ source: String) throws -> ParseResult {
+    /// Returns a `ParseResult` with `isSuccessful == false` (and `sppfGraph
+    /// == nil`) if the input is not in the language; `lastFailureMessage` is
+    /// set to a human-readable diagnostic in that case, for
+    /// `syntaxTree(for:)` / `allSyntaxTrees(for:)` to surface via
+    /// `ParseError`. Throws `ParseError` only for tokenizer-level failures.
+    public func parse(_ source: String) throws -> ParseResult<GrammarSlot> {
         gss.reset()
         bsr.reset()
+        lastFailureMessage = nil
 
         // ── 1. Tokenise ──────────────────────────────────────────────────────
         let tokens = tokenize(source)
@@ -127,7 +140,7 @@ public final class RNGLRParser: Parser, GeneralizedParser {
         guard n > 0 else {
             // Empty source with an ε-only grammar is valid; the frontier check
             // below handles the actual accept/reject decision.
-            return .success(bsr: bsr, sppf: SPPFGraph())
+            return ParseResult(isSuccessful: true, bsr: Set(), sppfGraph: SPPFGraph<GrammarSlot>())
         }
 
         // ── 2. Parse ─────────────────────────────────────────────────────────
@@ -176,7 +189,7 @@ public final class RNGLRParser: Parser, GeneralizedParser {
                     if acts.contains(.accept) {
                         // inputLength == n - 1: exclude the synthetic EOF token
                         let sppf = bsr.buildSPPF(grammar: grammar)
-                        return .success(bsr: bsr, sppf: sppf)
+                        return ParseResult(isSuccessful: true, bsr: bsr.asSharedBSRSet, sppfGraph: sppf)
                     }
                 }
                 // Reached EOF without finding an accept — parse failed.
@@ -190,8 +203,8 @@ public final class RNGLRParser: Parser, GeneralizedParser {
                 for act in acts {
                     if case .shift(let nextState) = act {
                         // Terminal SPPF leaf carries the display string of the token.
-                        let termNode = SPPFNode.terminal(
-                            symbol:      termKey,
+                        let termNode = SPPFNode<GrammarSlot>.leaf(
+                            label:       termKey,
                             leftExtent:  i,
                             rightExtent: i + 1
                         )
@@ -204,14 +217,13 @@ public final class RNGLRParser: Parser, GeneralizedParser {
 
             frontier = nextFrontier
             if frontier.isEmpty && i < n - 1 {
-                return .failure(
-                    position: i,
-                    message:  "Unexpected token '\(termKey)' (\(token.type)) at position \(i)"
-                )
+                lastFailureMessage = "Unexpected token '\(termKey)' (\(token.type)) at position \(i)"
+                return ParseResult(isSuccessful: false, bsr: bsr.asSharedBSRSet, sppfGraph: nil)
             }
         }
 
-        return .failure(position: n - 1, message: "Parse did not reach accept state")
+        lastFailureMessage = "Parse did not reach accept state"
+        return ParseResult(isSuccessful: false, bsr: bsr.asSharedBSRSet, sppfGraph: nil)
     }
 
     // MARK: - Tokenisation
@@ -354,8 +366,8 @@ public final class RNGLRParser: Parser, GeneralizedParser {
             ) else { continue }
 
             let newNode = gss.node(state: gotoState, position: position)
-            let symNode = SPPFNode.symbol(
-                name:        prod.goal.name,
+            let symNode = SPPFNode<GrammarSlot>.symbol(
+                label:       prod.goal.name,
                 leftExtent:  leftExtent,
                 rightExtent: rightExtent
             )
@@ -378,17 +390,11 @@ public final class RNGLRParser: Parser, GeneralizedParser {
     }
 
     /// Number of GSS edges to pop for `prod`.
-    /// Epsilon productions (empty rule, or rule consisting solely of epsilon
-    /// meta-terminals: `.meta(.eps)`, `.meta(.empty)`, or `.meta(.lambda)`) pop 0 edges.
+    /// Epsilon productions (empty rule, or rule consisting solely of symbols
+    /// for which `Symbol.isEpsilon` holds) pop 0 edges.
     private func effectivePopCount(_ prod: Production) -> Int {
         if prod.rule.isEmpty { return 0 }
-        let allEps = prod.rule.allSatisfy { sym in
-            guard case .terminal(let t) = sym else { return false }
-            switch t {
-            case .meta(.eps), .meta(.empty), .meta(.lambda): return true
-            default: return false
-            }
-        }
+        let allEps = prod.rule.allSatisfy { $0.isEpsilon }
         return allEps ? 0 : prod.rule.count
     }
 
@@ -400,11 +406,11 @@ public final class RNGLRParser: Parser, GeneralizedParser {
     private func gssPathsOfLength(
         from   start:  GSSNode,
         length:        Int
-    ) -> [(GSSNode, Int, [SPPFNode?])] {
+    ) -> [(GSSNode, Int, [SPPFNode<GrammarSlot>?])] {
         if length == 0 { return [(start, start.inputPosition, [])] }
 
-        var results: [(GSSNode, Int, [SPPFNode?])] = []
-        func dfs(node: GSSNode, remaining: Int, labels: [SPPFNode?]) {
+        var results: [(GSSNode, Int, [SPPFNode<GrammarSlot>?])] = []
+        func dfs(node: GSSNode, remaining: Int, labels: [SPPFNode<GrammarSlot>?]) {
             if remaining == 0 {
                 results.append((node, node.inputPosition, labels))
                 return
@@ -415,154 +421,5 @@ public final class RNGLRParser: Parser, GeneralizedParser {
         }
         dfs(node: start, remaining: length, labels: [])
         return results
-    }
-
-    // MARK: - SyntaxTree construction helpers
-
-    private func buildParseTree(bsr: BSRSet, sppf: SPPFGraph, tokenCount: Int) -> ParseTree {
-        let startName = grammar.start.name
-        guard let root = sppf.root(startSymbol: startName, inputLength: tokenCount) else {
-            return .empty
-        }
-        let enumerator = CSTEnumerator(graph: sppf)
-        var visited = Set<SPPFNode>()
-        let trees = enumerator.trees(for: root, visited: &visited)
-        return trees.first.flatMap { cstNodes in
-            cstNodes.first.map { cstToParseTree($0) }
-        } ?? .empty
-    }
-
-    private func buildAllParseTrees(sppf: SPPFGraph, tokenCount: Int) -> [ParseTree] {
-        let startName = grammar.start.name
-        guard let root = sppf.root(startSymbol: startName, inputLength: tokenCount) else {
-            return []
-        }
-        let enumerator = CSTEnumerator(graph: sppf)
-        var visited = Set<SPPFNode>()
-        let allTrees = enumerator.trees(for: root, visited: &visited)
-        return allTrees.compactMap { cstNodes in
-            cstNodes.first.map { cstToParseTree($0) }
-        }
-    }
-
-    private func cstToParseTree(_ node: CSTNode) -> ParseTree {
-        switch node {
-        case .terminal(let symbol, _):
-            // Terminal leaves carry their token string as a NonTerminal label so the
-            // tree structure is preserved.  (ParseTree = SyntaxTree<NonTerminal, …>
-            // has no leaf type that holds a raw string, so we wrap the symbol name
-            // in a synthetic NonTerminal.  Callers that need the actual token text
-            // can inspect the NonTerminal.name on leaf nodes whose children array
-            // is empty.)
-            let nt = NonTerminal(name: symbol)
-            return .node(nt, children: [])
-        case .nonTerminal(let sym, _, let children, _):
-            let nt = NonTerminal(name: sym)
-            return .node(nt, children: children.map { cstToParseTree($0) })
-        }
-    }
-}
-
-// MARK: - Concrete Syntax Tree Enumeration
-
-/// A concrete syntax tree node — one unambiguous derivation.
-public indirect enum CSTNode {
-    case terminal(symbol: String, extent: ClosedRange<Int>)
-    case nonTerminal(
-        symbol:     String,
-        production: Production,
-        children:   [CSTNode],
-        extent:     ClosedRange<Int>
-    )
-}
-
-extension CSTNode: CustomStringConvertible {
-    public var description: String { prettyPrint(indent: 0) }
-
-    private func prettyPrint(indent: Int) -> String {
-        let pad = String(repeating: "  ", count: indent)
-        switch self {
-        case .terminal(let s, let ext):
-            return "\(pad)Terminal[\(s)] @ \(ext.lowerBound)..\(ext.upperBound)"
-        case .nonTerminal(let s, _, let children, let ext):
-            let childStr = children
-                .map { $0.prettyPrint(indent: indent + 1) }
-                .joined(separator: "\n")
-            return "\(pad)\(s) @ \(ext.lowerBound)..\(ext.upperBound)\n\(childStr)"
-        }
-    }
-}
-
-// MARK: - CSTEnumerator
-
-/// Enumerate all concrete syntax trees from an SPPF graph.
-/// Handles ambiguity by exploring all packed-node alternatives.
-/// Cycle detection prevents infinite loops on grammars with ε cycles.
-public final class CSTEnumerator {
-    private let graph: SPPFGraph
-
-    public init(graph: SPPFGraph) { self.graph = graph }
-
-    /// Returns every parse tree rooted at `node` as a flat list of `CSTNode` forests.
-    public func trees(for node: SPPFNode,
-                      visited: inout Set<SPPFNode>) -> [[CSTNode]] {
-        guard visited.insert(node).inserted else { return [] }
-        defer { visited.remove(node) }
-
-        let result: [[CSTNode]]
-        switch node {
-        case .terminal(let s, let l, let r):
-            result = [[.terminal(symbol: s, extent: l...r)]]
-
-        case .symbol(let name, let l, let r):
-            var allTrees: [[CSTNode]] = []
-            for pack in graph.children(of: node) {
-                guard case .packed(let slot, _, _, _) = pack else { continue }
-                for childList in childrenOfPacked(pack, visited: &visited) {
-                    let cst = CSTNode.nonTerminal(
-                        symbol:     name,
-                        production: slot.production,
-                        children:   childList,
-                        extent:     l...r
-                    )
-                    allTrees.append([cst])
-                }
-            }
-            result = allTrees
-
-        case .intermediate:
-            var allChildren: [[CSTNode]] = []
-            for pack in graph.children(of: node) {
-                // Packed children are alternative derivations, rather than
-                // sequential RHS fragments. Combining them as a Cartesian
-                // product makes compact Catalan forests explode exponentially.
-                allChildren.append(contentsOf: childrenOfPacked(pack, visited: &visited))
-            }
-            result = allChildren
-
-        case .packed:
-            result = childrenOfPacked(node, visited: &visited)
-        }
-
-        return result
-    }
-
-    private func childrenOfPacked(_ pack: SPPFNode,
-                                   visited: inout Set<SPPFNode>) -> [[CSTNode]] {
-        var result: [[CSTNode]] = [[]]
-        for child in graph.children(of: pack) {
-            result = cartesianAppend(result, trees(for: child, visited: &visited))
-        }
-        return result
-    }
-
-    private func cartesianAppend(_ prefixes: [[CSTNode]],
-                                  _ suffixes: [[CSTNode]]) -> [[CSTNode]] {
-        guard !prefixes.isEmpty, !suffixes.isEmpty else { return [] }
-        var result: [[CSTNode]] = []
-        for pre in prefixes {
-            for suf in suffixes { result.append(pre + suf) }
-        }
-        return result
     }
 }

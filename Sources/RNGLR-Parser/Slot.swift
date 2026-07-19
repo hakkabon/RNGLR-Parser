@@ -8,6 +8,7 @@
 
 import Foundation
 import Grammar
+import Parser
 
 /// A *grammar slot* — a production with a dot position.
 /// `A → α • β`  where `dot` is the index into `production.rule` before which the dot sits.
@@ -62,4 +63,20 @@ extension GrammarSlot: CustomStringConvertible {
         parts.insert("•", at: dot)
         return "\(production.goal.name) → \(parts.joined(separator: " "))"
     }
+}
+
+// MARK: - Codable
+
+extension GrammarSlot: Codable {}
+
+// MARK: - SPPFLabel
+
+/// A `GrammarSlot` already carries exactly the three things `SPPFLabel`
+/// needs — the production's goal, its right-hand-side symbols, and the dot
+/// position — so conformance is a direct pass-through to the existing
+/// `production`/`dot` stored properties.
+extension GrammarSlot: SPPFLabel {
+    public var goal: NonTerminal { production.goal }
+    public var symbols: [Symbol] { production.rule }
+    public var position: Int { dot }
 }

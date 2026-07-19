@@ -2,17 +2,31 @@
 //  BSRSet.swift
 //  RNGLRParser
 //
-//  Created by Ulf Akerstedt-Inoue on 2026/05/24.
-//  Ported to use the Grammar package (hakkabon/Grammar) — uses NonTerminal, Production, Symbol.
+//  Created by Ulf Akerstedt-Inoue on 2026/05/22.
+//  Ported to use the Grammar package (hakkabon/Grammar) and the shared
+//  Parser package's generic SPPFNode<Label> / SPPFGraph<Label> types.
+//
+// Binary Subtree Representation (BSR) set — records every completed grammar
+// slot span discovered during a parse, à la Scott & Johnstone. The BSR set
+// itself is algorithm-agnostic bookkeeping; `buildSPPF(grammar:)` is what
+// turns it into a proper (binarised, shared) parse forest, walking the
+// right-hand side of each completed production right-to-left and attaching
+// `.symbol` / `.intermediate` / `.packed` / `.leaf` nodes as it goes.
 //
 
 import Foundation
 import Grammar
+import Parser
 
 // MARK: - BSR Triple
 
-/// A Binary Subtree Representation triple: (slot, leftExtent, rightExtent).
-/// Corresponds to a completed (or right-nulled) grammar slot over input[l..<r].
+/// One completed derivation step: `slot` (a fully-dotted `GrammarSlot`)
+/// spanning `[leftExtent, rightExtent)`.
+///
+/// This is the literal Scott & Johnstone BSR triple — no pivot is recorded
+/// here. A production's RHS can bind to more than one internal split point
+/// once the SPPF is built (see `attachSymbol`), so a single pivot could not
+/// be stored faithfully at this level even if we wanted to.
 public struct BSRTriple: Hashable {
     public let slot: GrammarSlot
     public let leftExtent: Int
@@ -21,67 +35,55 @@ public struct BSRTriple: Hashable {
 
 // MARK: - BSR Set
 
-/// The BSR set accumulates all derivations recorded during the parse.
-/// Space: O(n²) in the length of the input.  Each triple is stored once.
 public final class BSRSet {
     private var triples: Set<BSRTriple> = []
 
-    // MARK: Recording
-
-    /// Record the triple (slot, l, r) — idempotent (set semantics).
-    @discardableResult
-    public func add(slot: GrammarSlot, leftExtent: Int, rightExtent: Int) -> Bool {
-        let triple = BSRTriple(slot: slot, leftExtent: leftExtent, rightExtent: rightExtent)
-        return triples.insert(triple).inserted
-    }
+    public init() {}
 
     public var isEmpty: Bool { triples.isEmpty }
     public var count: Int { triples.count }
+    public var all: [BSRTriple] { Array(triples) }
 
-    // MARK: Querying
-
-    /// All triples for a completed slot (dot == rule.count) that start at `l`.
-    public func completed(from l: Int) -> [BSRTriple] {
-        triples.filter { $0.slot.isCompleted && $0.leftExtent == l }
+    /// Record a completed slot spanning `[leftExtent, rightExtent)`.
+    /// Returns `true` if this is a new triple.
+    @discardableResult
+    public func add(slot: GrammarSlot, leftExtent: Int, rightExtent: Int) -> Bool {
+        triples.insert(BSRTriple(slot: slot, leftExtent: leftExtent, rightExtent: rightExtent)).inserted
     }
-
-    /// All triples whose slot's LHS is `nt` and that span [l, r).
-    public func triples(lhs nt: NonTerminal, from l: Int, to r: Int) -> [BSRTriple] {
-        triples.filter {
-            $0.slot.isCompleted &&
-            $0.slot.production.goal == nt &&
-            $0.leftExtent == l &&
-            $0.rightExtent == r
-        }
-    }
-
-    /// All recorded triples (for SPPF construction).
-    public var all: Set<BSRTriple> { triples }
 
     public func reset() { triples.removeAll() }
 
-    // MARK: - SPPF Derivation
+    /// Best-effort conversion to the shared module's `BSR<GrammarSlot>`
+    /// record, for diagnostic/inspection purposes only (e.g. `gtool`'s
+    /// `--analysis sppf` output, or `ParseResult.bsr`). RNGLR's own
+    /// `BSRTriple` predates per-symbol binarisation and, unlike an
+    /// incrementally-built chart entry, does not carry a single pivot — a
+    /// multi-symbol RHS can bind to several distinct pivots once the SPPF is
+    /// built (see `attachSymbol`). `pivot` is set to `leftExtent` here as a
+    /// documented placeholder; nothing in the parse or SPPF-construction
+    /// pipeline reads it back.
+    public var asSharedBSRSet: Set<BSR<GrammarSlot>> {
+        Set(triples.map { triple in
+            BSR(label: triple.slot, leftExtent: triple.leftExtent, pivot: triple.leftExtent, rightExtent: triple.rightExtent)
+        })
+    }
 
-    /// Build an SPPF graph from the current BSR set.
-    /// Call this after a successful parse.
-    public func buildSPPF(grammar: Grammar) -> SPPFGraph {
-        let graph = SPPFGraph()
+    // MARK: - SPPF construction
+
+    /// Build an SPPF graph from the recorded BSR triples.
+    public func buildSPPF(grammar: Grammar) -> SPPFGraph<GrammarSlot> {
+        let graph = SPPFGraph<GrammarSlot>()
         var visited: Set<BSRTriple> = []
         var stepsDone: Set<StepKey> = []
         buildSymbolNodes(graph: graph, grammar: grammar, visited: &visited, stepsDone: &stepsDone)
         return graph
     }
 
-    // MARK: Private SPPF builders
-
-    /// Identifies one right-to-left binarisation step: "resolve `production`'s
-    /// symbol at `dot - 1` across a span ending at `right`". Once this exact
-    /// step has been fully attached to the graph, doing it again would only
-    /// recreate (via `graph.intern`/`addChild`'s own deduplication) the same
-    /// nodes and edges — this lets `attachSymbol` skip the repeat instead of
-    /// redoing it, which matters because the same step can be reached from
-    /// more than one candidate one level up whenever a span has more than
-    /// one valid derivation.
+    /// De-duplicates recursive `attachSymbol` calls: (production, dot,
+    /// leftExtent, right) uniquely identifies one binarisation step, and
+    /// without this guard a shared sub-derivation reachable through several
+    /// packed-node alternatives would be re-expanded (and re-recursed) once
+    /// per alternative.
     private struct StepKey: Hashable {
         let production: Production
         let dot: Int
@@ -89,74 +91,111 @@ public final class BSRSet {
         let right: Int
     }
 
-    private func buildSymbolNodes(graph: SPPFGraph, grammar: Grammar,
-                                   visited: inout Set<BSRTriple>,
-                                   stepsDone: inout Set<StepKey>) {
+    private func buildSymbolNodes(
+        graph: SPPFGraph<GrammarSlot>,
+        grammar: Grammar,
+        visited: inout Set<BSRTriple>,
+        stepsDone: inout Set<StepKey>
+    ) {
         for triple in triples {
             guard triple.slot.isCompleted else { continue }
             guard visited.insert(triple).inserted else { continue }
 
-            let prod = triple.slot.production
+            let production = triple.slot.production
+            let symNode = SPPFNode<GrammarSlot>.symbol(label: production.goal.name, leftExtent: triple.leftExtent, rightExtent: triple.rightExtent)
+            graph.add(symNode)
 
-            // Symbol node: non-terminal `goal` spanning [leftExtent, rightExtent)
-            let symNode = graph.intern(
-                SPPFNode.symbol(name: prod.goal.name,
-                                leftExtent: triple.leftExtent,
-                                rightExtent: triple.rightExtent)
+            attachDerivations(
+                to: symNode,
+                production: production,
+                leftExtent: triple.leftExtent,
+                rightExtent: triple.rightExtent,
+                grammar: grammar,
+                graph: graph,
+                stepsDone: &stepsDone
             )
-
-            // Attach every valid derivation of `prod` across this span as its
-            // own packed-node child of symNode — see attachSymbol(_:)'s doc
-            // comment for why this has to be "every", not just one.
-            attachDerivations(to: symNode, production: prod,
-                               leftExtent: triple.leftExtent, rightExtent: triple.rightExtent,
-                               grammar: grammar, graph: graph, stepsDone: &stepsDone)
         }
     }
 
-    private func attachDerivations(to parent: SPPFNode, production: Production,
-                                    leftExtent: Int, rightExtent: Int,
-                                    grammar: Grammar, graph: SPPFGraph,
-                                    stepsDone: inout Set<StepKey>) {
+    /// Attach every packed-node alternative for `production` to `parent`
+    /// (a `.symbol` node representing the fully completed production).
+    private func attachDerivations(
+        to parent: SPPFNode<GrammarSlot>,
+        production: Production,
+        leftExtent: Int,
+        rightExtent: Int,
+        grammar: Grammar,
+        graph: SPPFGraph<GrammarSlot>,
+        stepsDone: inout Set<StepKey>
+    ) {
         let rule = production.rule
 
-        // ε production (or a lone epsilon meta-terminal): one packed node, no children.
-        if rule.isEmpty || (rule.count == 1 && isEpsilonSymbol(rule[0])) {
-            let packed = graph.intern(SPPFNode.packed(slot: GrammarSlot(production: production, dot: rule.count), pivot: leftExtent, leftExtent: leftExtent, rightExtent: rightExtent))
-            graph.addChild(packed, to: parent)
+        // A genuine epsilon production (rule == []) never advances the
+        // input, so its packed node has no children at all — Grammar's
+        // Production normalizes any bare-epsilon RHS down to `[]` (see
+        // hakkabon/Grammar's Production.swift), so `rule.isEmpty` is the
+        // reliable test. The `rule.count == 1 && rule[0].isEpsilon` arm below
+        // is defensive: it should be unreachable given that normalization,
+        // but is kept in case a symbol slips through un-normalized.
+        if rule.isEmpty || (rule.count == 1 && rule[0].isEpsilon) {
+            let packed = SPPFNode<GrammarSlot>.packed(label: GrammarSlot(production: production, dot: rule.count), leftExtent: leftExtent, rightExtent: rightExtent, pivot: leftExtent)
+            graph.add(packed)
+            graph.addEdge(from: parent, to: packed)
             return
         }
 
-        attachSymbol(idx: rule.count - 1, rule: rule, production: production,
-                     parent: parent, leftExtent: leftExtent, right: rightExtent,
-                     grammar: grammar, graph: graph, stepsDone: &stepsDone)
+        attachSymbol(
+            idx: rule.count - 1,
+            rule: rule,
+            production: production,
+            parent: parent,
+            leftExtent: leftExtent,
+            right: rightExtent,
+            grammar: grammar,
+            graph: graph,
+            stepsDone: &stepsDone
+        )
     }
 
-    /// Resolves `rule[idx]` (walking right-to-left, per the binarisation
-    /// scheme described where the intermediate nodes are built below) across
-    /// *every* valid span ending at `right`, attaching one packed-node
-    /// alternative to `parent` per candidate — not just the first.
+    /// Resolve `rule[idx]` (walking the RHS right-to-left) across every
+    /// valid span ending at `right`, attaching one packed-node alternative
+    /// to `parent` per candidate.
     ///
-    /// A non-terminal symbol can have more than one valid span ending at the
-    /// same `right` exactly when the grammar is ambiguous at this point (for
-    /// example `S ::= S S` parsing three tokens: the first `S` can cover
-    /// either the first token alone or the first two, and both are valid).
-    /// Picking only one — which an earlier version of this method did, via
-    /// `triples.first(where:)` — silently discards every alternative
-    /// derivation, which is exactly the bug behind under-counting (or
-    /// mis-counting) ambiguous parses.
-    private func attachSymbol(idx: Int, rule: [Symbol], production: Production,
-                               parent: SPPFNode, leftExtent: Int, right: Int,
-                               grammar: Grammar, graph: SPPFGraph,
-                               stepsDone: inout Set<StepKey>) {
+    /// `p = idx + 1` symbols have been matched once this step completes
+    /// (`rule[0...idx]`). Per Scott & Johnstone §3.2's `mkPN`, a packed
+    /// node's *left* part (`rule[0..<idx]`, i.e. everything but the just
+    /// -resolved last symbol) is:
+    ///   - absent                       when p == 1 (no left part at all — the
+    ///                                   lone right child is the only child)
+    ///   - a direct symbol/leaf node     when p == 2 (`|α| = 2`)
+    ///   - an `.intermediate` node       when p  > 2 (`|α| > 2`), which is
+    ///                                   itself recursively expanded
+    ///
+    /// Collapsing this into a single "always wrap idx > 0 in an
+    /// intermediate node" rule (which is what a naive right-to-left walk
+    /// would do) would attach an `.intermediate` left child even when
+    /// `p == 2`, which the shared `CSTEnumeration` in the Parser module
+    /// does not expect for a 2-symbol packed node — it looks for the plain
+    /// symbol/leaf node directly. The three-way split below matches
+    /// `CSTEnumeration._expandPackedNode`'s `alpha.count` branches exactly.
+    private func attachSymbol(
+        idx: Int,
+        rule: [Symbol],
+        production: Production,
+        parent: SPPFNode<GrammarSlot>,
+        leftExtent: Int,
+        right: Int,
+        grammar: Grammar,
+        graph: SPPFGraph<GrammarSlot>,
+        stepsDone: inout Set<StepKey>
+    ) {
         let sym = rule[idx]
 
-        // Residual EBNF meta-symbols and epsilon meta-terminals occupy no
-        // span; skip straight to the next symbol to the left (or finish).
-        if isEpsilonSymbol(sym) || isMetaSymbol(sym) {
+        if sym.isEpsilon || isMetaSymbol(sym) {
             if idx == 0 {
-                let packed = graph.intern(SPPFNode.packed(slot: GrammarSlot(production: production, dot: 0), pivot: right, leftExtent: leftExtent, rightExtent: right))
-                graph.addChild(packed, to: parent)
+                let packed = SPPFNode<GrammarSlot>.packed(label: GrammarSlot(production: production, dot: 1), leftExtent: leftExtent, rightExtent: right, pivot: right)
+                graph.add(packed)
+                graph.addEdge(from: parent, to: packed)
             } else {
                 attachSymbol(idx: idx - 1, rule: rule, production: production,
                              parent: parent, leftExtent: leftExtent, right: right,
@@ -165,62 +204,50 @@ public final class BSRSet {
             return
         }
 
-        // Every valid (childNode, newRight) pair for rule[idx] ending at `right`.
-        let candidates: [(node: SPPFNode, newRight: Int)]
-        switch sym {
-        case .terminal(let t):
-            let childLeft = right - 1
-            candidates = [(graph.intern(SPPFNode.terminal(symbol: terminalString(t), leftExtent: childLeft, rightExtent: right)), childLeft)]
-
-        case .nonTerminal(let nt):
-            let matches = triples.filter {
-                $0.slot.isCompleted && $0.slot.production.goal == nt && $0.rightExtent == right
-            }
-            if matches.isEmpty && grammar.nullableNonTerminals.contains(nt) {
-                // A missing completed span represents ε only for a genuinely
-                // nullable non-terminal. Treating every missing span as ε
-                // creates self-referential SPPF edges for recursive grammars.
-                candidates = [(graph.intern(SPPFNode.symbol(name: nt.name, leftExtent: right, rightExtent: right)), right)]
-            } else {
-                candidates = matches.map {
-                    (graph.intern(SPPFNode.symbol(name: nt.name, leftExtent: $0.leftExtent, rightExtent: right)), $0.leftExtent)
-                }
-            }
-
-        case .metaSymbol:
-            fatalError("unreachable: handled by the isMetaSymbol(_:) check above")
-        }
-
-        for (childNode, newRight) in candidates {
-            // A non-empty prefix must consume input before the final RHS
-            // symbol begins. Without this guard, a candidate equal to the
-            // parent span creates a packed node that points back to its own
-            // symbol node (S → S S is the canonical example). Such a cycle
-            // is not a derivation; it is only legal when the whole prefix can
-            // genuinely derive ε.
+        for (childNode, newRight) in resolveCandidates(for: sym, right: right, grammar: grammar, graph: graph) {
             if idx > 0,
                newRight == leftExtent,
                !symbolsCanDeriveEmpty(Array(rule[..<idx]), grammar: grammar) {
+                // The remaining prefix rule[0..<idx] can't possibly derive
+                // empty, yet this candidate leaves it nothing to span — not
+                // a valid split for this production.
                 continue
             }
-            if idx == 0 {
-                // First symbol of the RHS: valid only if it actually reaches
-                // back to the production's own left edge.
+
+            switch idx {
+            case 0:
+                // p = 1: the single resolved symbol is the packed node's only child.
                 guard newRight == leftExtent else { continue }
-                let packed = graph.intern(SPPFNode.packed(slot: GrammarSlot(production: production, dot: 0), pivot: newRight, leftExtent: leftExtent, rightExtent: right))
-                graph.addChild(packed, to: parent)
-                graph.addChild(childNode, to: packed)
-            } else {
-                // Binarise: packed.children = [intermediate-node-for-prefix, thisSymbol].
-                // (An earlier version of this method created the intermediate
-                // node but never actually attached it here — silently
-                // dropping every RHS symbol except the last from the tree.)
+                let packed = SPPFNode<GrammarSlot>.packed(label: GrammarSlot(production: production, dot: 1), leftExtent: leftExtent, rightExtent: right, pivot: newRight)
+                graph.add(packed)
+                graph.addEdge(from: parent, to: packed)
+                graph.addEdge(from: packed, to: childNode)
+
+            case 1:
+                // p = 2: the left part is the single symbol rule[0] —
+                // attach it directly, no intermediate node needed.
+                for (leftNode, leftNewRight) in resolveCandidates(for: rule[0], right: newRight, grammar: grammar, graph: graph) {
+                    guard leftNewRight == leftExtent else { continue }
+                    let packed = SPPFNode<GrammarSlot>.packed(label: GrammarSlot(production: production, dot: 2), leftExtent: leftExtent, rightExtent: right, pivot: newRight)
+                    graph.add(packed)
+                    graph.addEdge(from: parent, to: packed)
+                    graph.addEdge(from: packed, to: leftNode)
+                    graph.addEdge(from: packed, to: childNode)
+                }
+
+            default:
+                // p > 2: the left part spans more than one symbol — attach
+                // via an intermediate node representing rule[0..<idx], and
+                // recursively expand that intermediate's own alternatives.
                 let prefixSlot = GrammarSlot(production: production, dot: idx)
-                let intNode = graph.intern(SPPFNode.intermediate(slot: prefixSlot, leftExtent: leftExtent, rightExtent: newRight))
-                let packed  = graph.intern(SPPFNode.packed(slot: GrammarSlot(production: production, dot: idx + 1), pivot: newRight, leftExtent: leftExtent, rightExtent: right))
-                graph.addChild(packed, to: parent)
-                graph.addChild(intNode, to: packed)
-                graph.addChild(childNode, to: packed)
+                let intNode = SPPFNode<GrammarSlot>.intermediate(label: prefixSlot, leftExtent: leftExtent, rightExtent: newRight)
+                graph.add(intNode)
+
+                let packed = SPPFNode<GrammarSlot>.packed(label: GrammarSlot(production: production, dot: idx + 1), leftExtent: leftExtent, rightExtent: right, pivot: newRight)
+                graph.add(packed)
+                graph.addEdge(from: parent, to: packed)
+                graph.addEdge(from: packed, to: intNode)
+                graph.addEdge(from: packed, to: childNode)
 
                 let step = StepKey(production: production, dot: idx, leftExtent: leftExtent, right: newRight)
                 if stepsDone.insert(step).inserted {
@@ -232,41 +259,85 @@ public final class BSRSet {
         }
     }
 
-    // MARK: - Symbol helpers
+    /// Every valid `(node, newLeftBoundary)` pair for `sym` ending at `right`:
+    ///   - a terminal always resolves to exactly one leaf spanning `[right-1, right)`.
+    ///   - a non-terminal resolves to one `.symbol` node per completed BSR
+    ///     triple for that non-terminal ending at `right` — or, if none
+    ///     exist but the non-terminal is nullable, a zero-width `.symbol`
+    ///     node at `right` (mirrors the fact that a genuinely epsilon-only
+    ///     completion never gets its own BSR triple; see `attachDerivations`).
+    private func resolveCandidates(
+        for sym: Symbol,
+        right: Int,
+        grammar: Grammar,
+        graph: SPPFGraph<GrammarSlot>
+    ) -> [(node: SPPFNode<GrammarSlot>, newLeft: Int)] {
+        switch sym {
+        case .terminal(let t):
+            let childLeft = right - 1
+            let leaf = SPPFNode<GrammarSlot>.leaf(label: terminalString(t), leftExtent: childLeft, rightExtent: right)
+            graph.add(leaf)
+            return [(leaf, childLeft)]
 
-    private func isEpsilonSymbol(_ sym: Symbol) -> Bool {
-        if case .terminal(let t) = sym, case .meta(.eps) = t { return true }
-        return false
+        case .nonTerminal(let nt):
+            let matches = triples.filter {
+                $0.slot.isCompleted && $0.slot.production.goal == nt && $0.rightExtent == right
+            }
+            if matches.isEmpty && grammar.nullableNonTerminals.contains(nt) {
+                let node = SPPFNode<GrammarSlot>.symbol(label: nt.name, leftExtent: right, rightExtent: right)
+                graph.add(node)
+                return [(node, right)]
+            }
+            return matches.map { match in
+                let node = SPPFNode<GrammarSlot>.symbol(label: nt.name, leftExtent: match.leftExtent, rightExtent: right)
+                graph.add(node)
+                return (node, match.leftExtent)
+            }
+
+        case .metaSymbol:
+            // Callers filter meta symbols out via isMetaSymbol(_:) before
+            // reaching here.
+            fatalError("unreachable: meta symbols are handled by the isMetaSymbol(_:) check in attachSymbol")
+        }
     }
 
-    private func isMetaSymbol(_ sym: Symbol) -> Bool {
-        if case .metaSymbol = sym { return true }
+    // MARK: - Helpers
+
+    private func isMetaSymbol(_ symbol: Symbol) -> Bool {
+        if case .metaSymbol = symbol { return true }
         return false
     }
 
     private func symbolsCanDeriveEmpty(_ symbols: [Symbol], grammar: Grammar) -> Bool {
         symbols.allSatisfy { symbol in
             switch symbol {
-            case .terminal(let terminal):
-                if case .meta(.eps) = terminal { return true }
-                if case .meta(.empty) = terminal { return true }
-                return false
-            case .nonTerminal(let nonTerminal):
-                return grammar.nullableNonTerminals.contains(nonTerminal)
-            case .metaSymbol:
-                return true
+            case .nonTerminal(let nt): return grammar.nullableNonTerminals.contains(nt)
+            case .terminal, .metaSymbol: return symbol.isEpsilon || isMetaSymbol(symbol)
             }
         }
     }
 
-    /// Extract the display string for a Terminal value.
-    private func terminalString(_ terminal: Terminal) -> String {
-        switch terminal {
-        case .string(let s):                return s
-        case .characterRange(let r):        return "\(r.lowerBound)...\(r.upperBound)"
-        case .stringList(let list):         return list.joined(separator: "|")
-        case .regularExpression(let re):    return re.pattern
-        case .meta(let m):                  return m.rawValue
+    private func terminalString(_ t: Terminal) -> String {
+        switch t {
+        case .string(let s): return s
+        case .meta(let m): return m.rawValue
+        case .regularExpression(let re): return re.pattern
+        case .characterRange(let r): return "\(r.lowerBound)..\(r.upperBound)"
+        case .stringList(let list): return list.joined(separator: "|")
+        }
+    }
+}
+
+// MARK: - Root lookup
+
+public extension SPPFGraph where Label == GrammarSlot {
+    /// The root symbol node for `startSymbol` spanning the whole input, if present.
+    func root(startSymbol: String, inputLength: Int) -> SPPFNode<GrammarSlot>? {
+        getAllNodes().first { node in
+            if case let .symbol(label, l, r) = node {
+                return label == startSymbol && l == 0 && r == inputLength
+            }
+            return false
         }
     }
 }

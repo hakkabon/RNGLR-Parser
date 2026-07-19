@@ -1,6 +1,7 @@
 import XCTest
 @testable import RNGLR_Parser
 import Grammar
+import Parser
 
 //  Test Strategy
 //  ─────────────
@@ -14,12 +15,13 @@ final class SPPFGraphvizTests: XCTestCase {
 
     // MARK: - Helper
 
-    private func sppf(_ bnf: String, start: String, input: String) throws -> SPPFGraph {
+    private func sppf(_ bnf: String, start: String, input: String) throws -> SPPFGraph<GrammarSlot> {
         let grammar = try Grammar(bnf: bnf, start: start)
         let parser  = RNGLRParser(grammar: grammar)
-        guard case .success(_, let sppf) = try parser.parse(input) else {
+        let result  = try parser.parse(input)
+        guard result.isSuccessful, let sppf = result.sppfGraph else {
             XCTFail("Parse failed for input '\(input)'")
-            return SPPFGraph()
+            return SPPFGraph<GrammarSlot>()
         }
         return sppf
     }
@@ -45,12 +47,12 @@ final class SPPFGraphvizTests: XCTestCase {
                       "Start symbol name 'S' should appear in DOT output")
     }
 
-    // MARK: ── 3. Node presence: terminal node appears ─────────────────────────
+    // MARK: ── 3. Node presence: terminal (leaf) node appears ──────────────────
 
     func testTerminalNodePresent() throws {
         let dot = try sppf("S ::= 'a' \n", start: "S", input: "a").graphviz
         XCTAssertTrue(dot.contains("shape=rectangle"),
-                      "Terminal node should use rectangle shape")
+                      "Leaf (terminal) node should use rectangle shape")
     }
 
     // MARK: ── 4. Node presence: packed node appears ───────────────────────────
@@ -118,7 +120,7 @@ final class SPPFGraphvizTests: XCTestCase {
     func testFillColours() throws {
         let dot = try sppf("S ::= 'a' 'b' 'c' \n", start: "S", input: "a b c").graphviz
         XCTAssertTrue(dot.contains("#dce8f5"), "Symbol nodes: blue fill")
-        XCTAssertTrue(dot.contains("#d5e8d4"), "Terminal nodes: green fill")
+        XCTAssertTrue(dot.contains("#d5e8d4"), "Leaf (terminal) nodes: green fill")
         XCTAssertTrue(dot.contains("#fff2cc"), "Intermediate nodes: yellow fill")
         XCTAssertTrue(dot.contains("#f8cecc"), "Packed nodes: pink fill")
     }
@@ -173,7 +175,7 @@ final class SPPFGraphvizTests: XCTestCase {
     // MARK: ── 14. Empty graph produces valid DOT ──────────────────────────────
 
     func testEmptyGraphProducesValidDot() {
-        let dot = SPPFGraph().graphviz
+        let dot = SPPFGraph<GrammarSlot>().graphviz
         XCTAssertTrue(dot.contains("digraph SPPF {"))
         XCTAssertTrue(dot.hasSuffix("}"))
     }

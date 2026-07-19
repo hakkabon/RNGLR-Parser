@@ -10,6 +10,7 @@ import Foundation
 import ArgumentParser
 import Grammar
 import RNGLR_Parser
+import Parser
 import ShellOut
 
 ///  Parses any input sentence based on its given grammar specification.
@@ -75,26 +76,22 @@ extension GrammarTool {
             case .sppf:
                 let result = try parser.parse(input)
 
-                switch result {
-                case .failure(let pos, let msg):
-                    print("Parse FAILED at position \(pos): \(msg)")
-
-                case .success(let bsr, let sppf):
+                if !result.isSuccessful {
+                    print("Parse FAILED: input not recognized by the grammar.")
+                } else if let sppf = result.sppfGraph {
                     let tokenCount = parser.tokenize(input)
                         .filter { $0.type != .eof }
                         .count
 
                     print("Parse succeeded.")
                     print("  Ambiguous : \(result.hasAmbiguity)")
-                    print("  BSR triples: \(bsr.count)")
+                    print("  BSR triples: \(result.bsr.count)")
 
-                    if let root = sppf.root(
-                        startSymbol:  grammar.start.name,
-                        inputLength:  tokenCount
-                    ) {
-                        var visited = Set<SPPFNode>()
-                        let trees = CSTEnumerator(graph: sppf)
-                            .trees(for: root, visited: &visited)
+                    if sppf.root(startSymbol: grammar.start.name, inputLength: tokenCount) != nil {
+                        let ranges = parser.tokenize(input)
+                            .filter { $0.type != .eof }
+                            .map(\.range)
+                        let trees = sppf.buildAllParseTrees(startSymbol: grammar.start.name, ranges: ranges, string: input)
                         print("  Parse trees: \(trees.count)")
                     }
 

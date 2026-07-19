@@ -10,11 +10,12 @@
 
 import Foundation
 import Grammar
+import Parser
 
 // SPPF structure recap
 // ─────────────────────
 //   Symbol / Intermediate nodes  ──(solid)──▶  Packed nodes
-//   Packed nodes                 ──(dashed)──▶  Symbol / Intermediate / Terminal nodes
+//   Packed nodes                 ──(dashed)──▶  Symbol / Intermediate / Leaf nodes
 //
 // Node visual conventions follow Scott & Johnstone (2006) and the standard SPPF
 // literature, extended with colour to make ambiguity immediately visible:
@@ -22,7 +23,7 @@ import Grammar
 //   Kind           Shape        Fill colour      Border
 //   ─────────────  ───────────  ───────────────  ──────────────────────────────────
 //   Symbol         ellipse      #dce8f5 (blue)   double when ambiguous (>1 packed child)
-//   Terminal       rectangle    #d5e8d4 (green)  single
+//   Leaf           rectangle    #d5e8d4 (green)  single
 //   Intermediate   note         #fff2cc (yellow) single
 //   Packed         diamond      #f8cecc (pink)   single
 //
@@ -30,23 +31,23 @@ import Grammar
 //   symbol / intermediate  →  packed   : solid black
 //   packed                 →  child    : dashed, labelled with pivot index
 //
-// The `graphviz` property on `SPPFGraph` returns the complete DOT source.
-// `SPPFGraph.writeDot(to:)` saves it to a file.
-// `SPPFGraph.renderPDF(to:)` renders to PDF via the `dot` command-line tool.
+// The `graphviz` property on `SPPFGraph<GrammarSlot>` returns the complete DOT source.
+// `SPPFGraph<GrammarSlot>.writeDot(to:)` saves it to a file.
+// `SPPFGraph<GrammarSlot>.renderPDF(to:)` renders to PDF via the `dot` command-line tool.
 
-extension SPPFGraph {
+extension SPPFGraph where Label == GrammarSlot {
 
     /// The complete Graphviz DOT source for this SPPF.
     ///
     /// The generated graph is a `digraph` that faithfully represents the sharing
     /// structure of the SPPF: every node appears exactly once, and edges mirror
-    /// `SPPFGraph.children(of:)`.
+    /// `SPPFGraph.getChildren(of:)`.
     ///
     /// Usage
     /// ─────
     /// ```swift
     /// let result = try parser.parse("id + id * id")
-    /// if case .success(_, let sppf) = result {
+    /// if result.isSuccessful, let sppf = result.sppfGraph {
     ///     print(sppf.graphviz)
     ///     // — or —
     ///     try sppf.writeDot(to: URL(fileURLWithPath: "sppf.dot"))
@@ -134,14 +135,14 @@ public enum SPPFGraphvizError: Error, CustomStringConvertible {
 /// All rendering logic lives here, keeping `SPPFGraph` clean.
 private struct SPPFDotRenderer {
 
-    let graph: SPPFGraph
+    let graph: SPPFGraph<GrammarSlot>
 
     // MARK: - Stable node ordering
 
     /// Assign a deterministic integer ID to every node.
     /// Sorting by `description` ensures the same input always produces the same DOT.
-    private func buildNodeIndex() -> [SPPFNode: Int] {
-        let sorted = graph.allNodes
+    private func buildNodeIndex() -> [SPPFNode<GrammarSlot>: Int] {
+        let sorted = graph.getAllNodes()
             .sorted { $0.stableKey < $1.stableKey }
         return Dictionary(uniqueKeysWithValues: sorted.enumerated().map { ($1, $0) })
     }
@@ -164,8 +165,8 @@ private struct SPPFDotRenderer {
         for node in symbolNodes(index) { lines.append("    \(node)") }
         lines.append("")
 
-        lines.append("    // ── Terminal nodes ────────────────────────────────────────────")
-        for node in terminalNodes(index) { lines.append("    \(node)") }
+        lines.append("    // ── Leaf nodes (terminals) ───────────────────────────────────")
+        for node in leafNodes(index) { lines.append("    \(node)") }
         lines.append("")
 
         lines.append("    // ── Intermediate nodes ───────────────────────────────────────")
@@ -186,15 +187,15 @@ private struct SPPFDotRenderer {
 
     // MARK: - Node declarations by kind
 
-    private func symbolNodes(_ index: [SPPFNode: Int]) -> [String] {
-        graph.allNodes
+    private func symbolNodes(_ index: [SPPFNode<GrammarSlot>: Int]) -> [String] {
+        graph.getAllNodes()
             .filter { if case .symbol = $0 { return true }; return false }
             .sorted { $0.stableKey < $1.stableKey }
             .map { node -> String in
                 guard case .symbol(let name, let l, let r) = node,
                       let id = index[node] else { return "" }
                 // Double border when ambiguous (> 1 packed child = multiple derivations).
-                let isAmbiguous = graph.children(of: node)
+                let isAmbiguous = graph.getChildren(of: node)
                     .filter { if case .packed = $0 { return true }; return false }
                     .count > 1
                 let border = isAmbiguous ? "peripheries=2 " : ""
@@ -204,12 +205,12 @@ private struct SPPFDotRenderer {
             .filter { !$0.isEmpty }
     }
 
-    private func terminalNodes(_ index: [SPPFNode: Int]) -> [String] {
-        graph.allNodes
-            .filter { if case .terminal = $0 { return true }; return false }
+    private func leafNodes(_ index: [SPPFNode<GrammarSlot>: Int]) -> [String] {
+        graph.getAllNodes()
+            .filter { if case .leaf = $0 { return true }; return false }
             .sorted { $0.stableKey < $1.stableKey }
             .map { node -> String in
-                guard case .terminal(let sym, let l, let r) = node,
+                guard case .leaf(let sym, let l, let r) = node,
                       let id = index[node] else { return "" }
                 let display = sym.isEmpty ? "ε" : sym
                 let label   = dotLabel("\(display)\n[\(l), \(r))")
@@ -218,8 +219,8 @@ private struct SPPFDotRenderer {
             .filter { !$0.isEmpty }
     }
 
-    private func intermediateNodes(_ index: [SPPFNode: Int]) -> [String] {
-        graph.allNodes
+    private func intermediateNodes(_ index: [SPPFNode<GrammarSlot>: Int]) -> [String] {
+        graph.getAllNodes()
             .filter { if case .intermediate = $0 { return true }; return false }
             .sorted { $0.stableKey < $1.stableKey }
             .map { node -> String in
@@ -231,12 +232,12 @@ private struct SPPFDotRenderer {
             .filter { !$0.isEmpty }
     }
 
-    private func packedNodes(_ index: [SPPFNode: Int]) -> [String] {
-        graph.allNodes
+    private func packedNodes(_ index: [SPPFNode<GrammarSlot>: Int]) -> [String] {
+        graph.getAllNodes()
             .filter { if case .packed = $0 { return true }; return false }
             .sorted { $0.stableKey < $1.stableKey }
             .map { node -> String in
-                guard case .packed(let slot, let pivot, _, _) = node,
+                guard case .packed(let slot, _, _, let pivot) = node,
                       let id = index[node] else { return "" }
                 let label = dotLabel("\(slot.dotLabel)\nk=\(pivot)")
                 return "n\(id) [shape=diamond style=filled fillcolor=\"#f8cecc\" label=\(label)]"
@@ -246,12 +247,12 @@ private struct SPPFDotRenderer {
 
     // MARK: - Edge declarations
 
-    private func allEdges(_ index: [SPPFNode: Int]) -> [String] {
+    private func allEdges(_ index: [SPPFNode<GrammarSlot>: Int]) -> [String] {
         var result = [String]()
 
-        for parent in graph.allNodes.sorted(by: { $0.stableKey < $1.stableKey }) {
+        for parent in graph.getAllNodes().sorted(by: { $0.stableKey < $1.stableKey }) {
             guard let parentID = index[parent] else { continue }
-            let children = graph.children(of: parent)
+            let children = graph.getChildren(of: parent).sorted { $0.stableKey < $1.stableKey }
             guard !children.isEmpty else { continue }
 
             for child in children {
@@ -262,12 +263,12 @@ private struct SPPFDotRenderer {
                     // Symbol / intermediate → packed: solid black arrow
                     result.append("n\(parentID) -> n\(childID) [style=solid arrowhead=normal]")
 
-                case .packed(_, let pivot, _, _):
+                case .packed(_, _, _, let pivot):
                     // Packed → child: dashed, label shows pivot
                     result.append("n\(parentID) -> n\(childID) [style=dashed label=\"\(pivot)\" arrowhead=open]")
 
-                case .terminal:
-                    // Terminal nodes are leaves — should have no children,
+                case .leaf:
+                    // Leaf nodes are leaves — should have no children,
                     // but emit a plain edge if they ever do.
                     result.append("n\(parentID) -> n\(childID)")
                 }
@@ -300,16 +301,16 @@ private struct SPPFDotRenderer {
 
 // MARK: - Stable sort key for SPPFNode
 
-extension SPPFNode {
+extension SPPFNode where Label == GrammarSlot {
     /// A lexicographically-sortable string key for deterministic node ordering.
     /// Using `description` directly works but may be unstable if descriptions
     /// share a prefix, so we prefix with a kind tag.
     fileprivate var stableKey: String {
         switch self {
-        case .terminal(let s, let l, let r):     return "0t_\(s)_\(l)_\(r)"
-        case .symbol(let n, let l, let r):       return "1s_\(n)_\(l)_\(r)"
-        case .intermediate(let sl, let l, let r):return "2i_\(sl.stableKey)_\(l)_\(r)"
-        case .packed(let sl, let k, let l, let r): return "3p_\(sl.stableKey)_\(k)_\(l)_\(r)"
+        case .leaf(let s, let l, let r):            return "0t_\(s)_\(l)_\(r)"
+        case .symbol(let n, let l, let r):          return "1s_\(n)_\(l)_\(r)"
+        case .intermediate(let sl, let l, let r):   return "2i_\(sl.stableKey)_\(l)_\(r)"
+        case .packed(let sl, let l, let r, let k):  return "3p_\(sl.stableKey)_\(k)_\(l)_\(r)"
         }
     }
 }

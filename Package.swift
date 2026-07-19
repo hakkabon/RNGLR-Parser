@@ -3,9 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "RNGLR-Parser",
-    platforms: [
-        .macOS(.v13)
-    ],
+    platforms: [.macOS(.v13)],
     products: [
         .library(name: "RNGLR-Parser", targets: ["RNGLR-Parser"]),
         .executable(name: "gtool", targets: ["gtool"]),
@@ -18,6 +16,7 @@ let package = Package(
         .package(url: "https://github.com/hakkabon/GrammarTokenizer.git", branch: "main"),
         .package(url: "https://github.com/hakkabon/GrammarDiagram.git", branch: "main"),
         .package(url: "https://github.com/hakkabon/TerminalColors.git", from: "0.0.1"),
+        .package(url: "https://github.com/hakkabon/Parser.git", branch: "main"),
     ],
     targets: [
         .target(
@@ -27,6 +26,7 @@ let package = Package(
                 .product(name: "Tokenizer", package: "GrammarTokenizer"),
                 .product(name: "GrammarDiagram", package: "GrammarDiagram"),
                 .product(name: "TerminalColors", package: "TerminalColors"),
+                .product(name: "Parser", package: "Parser"),
             ],
             path: "Sources/RNGLR-Parser",
         ),
@@ -35,6 +35,7 @@ let package = Package(
             dependencies: [
                 "RNGLR-Parser",
                 .product(name: "Grammar", package: "Grammar"),
+                .product(name: "Parser", package: "Parser"),
             ],
             path: "Tests/RNGLR-ParserTests"
         ),
@@ -47,6 +48,7 @@ let package = Package(
                 .product(name: "ShellOut", package: "shellout"),
                 .product(name: "Grammar", package: "Grammar"),
                 .product(name: "GrammarDiagram", package: "GrammarDiagram"),
+                .product(name: "Parser", package: "Parser"),
             ]
         ),
         .executableTarget(
@@ -57,6 +59,7 @@ let package = Package(
                 .product(name: "Tokenizer", package: "GrammarTokenizer"),
                 .product(name: "GrammarDiagram", package: "GrammarDiagram"),
                 .product(name: "TerminalColors", package: "TerminalColors"),
+                .product(name: "Parser", package: "Parser"),
             ],
         ),
     ]

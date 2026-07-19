@@ -2,6 +2,7 @@ import XCTest
 @testable import RNGLR_Parser
 import Grammar
 import Tokenizer
+import Parser
 
 final class RNGLRParserTests: XCTestCase {
 
@@ -12,8 +13,16 @@ final class RNGLRParserTests: XCTestCase {
         return RNGLRParser(grammar: grammar)
     }
 
-    func parse(_ parser: RNGLRParser, _ input: String) -> ParseResult {
-        (try? parser.parse(input)) ?? .failure(position: -1, message: "threw")
+    func parse(_ parser: RNGLRParser, _ input: String) -> ParseResult<GrammarSlot> {
+        (try? parser.parse(input)) ?? ParseResult(isSuccessful: false, bsr: Set(), sppfGraph: nil)
+    }
+
+    /// Number of derivations for `input`, via the shared tree-builder.
+    func treeCount(_ parser: RNGLRParser, _ input: String, startSymbol: String) -> Int? {
+        let result = parse(parser, input)
+        guard result.isSuccessful, let sppf = result.sppfGraph else { return nil }
+        let ranges = parser.tokenize(input).filter { $0.type != .eof }.map(\.range)
+        return sppf.buildAllParseTrees(startSymbol: startSymbol, ranges: ranges, string: input).count
     }
 
     // MARK: ── 1. tokenKey mapping ─────────────────────────────────────────────
@@ -141,10 +150,10 @@ final class RNGLRParserTests: XCTestCase {
             F ::= 'id'
             """, start: "E")
         let result = parse(parser, "id + id * id")
-        guard case .success(let bsr, let sppf) = result else {
+        guard result.isSuccessful, let sppf = result.sppfGraph else {
             return XCTFail("Expected parse success")
         }
-        XCTAssertGreaterThan(bsr.count, 0)
+        XCTAssertGreaterThan(result.bsr.count, 0)
         XCTAssertNotNil(sppf.root(startSymbol: "E", inputLength: 5))
     }
 
@@ -157,13 +166,10 @@ final class RNGLRParserTests: XCTestCase {
             F ::= '(' E ')'
             F ::= 'id'
             """, start: "E")
-        guard case .success(_, let sppf) = parse(parser, "id + id"),
-              let root = sppf.root(startSymbol: "E", inputLength: 3) else {
+        guard let count = treeCount(parser, "id + id", startSymbol: "E") else {
             return XCTFail("Parse failed")
         }
-        var v = Set<SPPFNode>()
-        XCTAssertEqual(CSTEnumerator(graph: sppf).trees(for: root, visited: &v).count, 1,
-                       "Unambiguous grammar: exactly 1 tree")
+        XCTAssertEqual(count, 1, "Unambiguous grammar: exactly 1 tree")
     }
 
     func testArithmeticFailure() throws {
@@ -173,7 +179,7 @@ final class RNGLRParserTests: XCTestCase {
             T ::= F
             F ::= 'id'
             """, start: "E")
-        if case .success = parse(parser, "id + +") {
+        if parse(parser, "id + +").isSuccessful {
             XCTFail("Expected parse failure")
         }
     }
@@ -185,12 +191,10 @@ final class RNGLRParserTests: XCTestCase {
             E ::= E '+' E
             E ::= 'a'
             """, start: "E")
-        guard case .success(_, let sppf) = parse(parser, "a + a + a"),
-              let root = sppf.root(startSymbol: "E", inputLength: 5) else {
+        guard let count = treeCount(parser, "a + a + a", startSymbol: "E") else {
             return XCTFail("Parse failed")
         }
-        var v = Set<SPPFNode>()
-        XCTAssertEqual(CSTEnumerator(graph: sppf).trees(for: root, visited: &v).count, 2)
+        XCTAssertEqual(count, 2)
     }
 
     func testAmbiguousSingleTokenOneTree() throws {
@@ -198,12 +202,10 @@ final class RNGLRParserTests: XCTestCase {
             E ::= E '+' E
             E ::= 'a'
             """, start: "E")
-        guard case .success(_, let sppf) = parse(parser, "a"),
-              let root = sppf.root(startSymbol: "E", inputLength: 1) else {
+        guard let count = treeCount(parser, "a", startSymbol: "E") else {
             return XCTFail("Parse failed")
         }
-        var v = Set<SPPFNode>()
-        XCTAssertEqual(CSTEnumerator(graph: sppf).trees(for: root, visited: &v).count, 1)
+        XCTAssertEqual(count, 1)
     }
 
     // MARK: ── 6. Epsilon / nullable ───────────────────────────────────────────
@@ -260,13 +262,10 @@ final class RNGLRParserTests: XCTestCase {
             S ::= S S
             S ::= 'a'
             """, start: "S")
-        guard case .success(_, let sppf) = parse(parser, "a a a"),
-              let root = sppf.root(startSymbol: "S", inputLength: 3) else {
+        guard let count = treeCount(parser, "a a a", startSymbol: "S") else {
             return XCTFail("Parse failed")
         }
-        var v = Set<SPPFNode>()
-        XCTAssertEqual(CSTEnumerator(graph: sppf).trees(for: root, visited: &v).count, 2,
-                       "Catalan(2) = 2")
+        XCTAssertEqual(count, 2, "Catalan(2) = 2")
     }
 
     func testCatalan4() throws {
@@ -274,23 +273,21 @@ final class RNGLRParserTests: XCTestCase {
             S ::= S S
             S ::= 'a'
             """, start: "S")
-        guard case .success(_, let sppf) = parse(parser, "a a a a"),
-              let root = sppf.root(startSymbol: "S", inputLength: 4) else {
+        guard let count = treeCount(parser, "a a a a", startSymbol: "S") else {
             return XCTFail("Parse failed")
         }
-        var v = Set<SPPFNode>()
-        XCTAssertEqual(CSTEnumerator(graph: sppf).trees(for: root, visited: &v).count, 5,
-                       "Catalan(3) = 5")
+        XCTAssertEqual(count, 5, "Catalan(3) = 5")
     }
 
     // MARK: ── 9. BSR triple count ─────────────────────────────────────────────
 
     func testBSRSingleToken() throws {
         let parser = try makeParser("S ::= 'a' \n", start: "S")
-        guard case .success(let bsr, _) = parse(parser, "a") else {
+        let result = parse(parser, "a")
+        guard result.isSuccessful else {
             return XCTFail("Parse failed")
         }
-        XCTAssertEqual(bsr.count, 1)
+        XCTAssertEqual(result.bsr.count, 1)
     }
 
     func testBSRNonEmpty() throws {
@@ -299,17 +296,19 @@ final class RNGLRParserTests: XCTestCase {
             E ::= T
             T ::= 'n'
             """, start: "E")
-        guard case .success(let bsr, _) = parse(parser, "n + n") else {
+        let result = parse(parser, "n + n")
+        guard result.isSuccessful else {
             return XCTFail("Parse failed")
         }
-        XCTAssertGreaterThan(bsr.count, 0)
+        XCTAssertGreaterThan(result.bsr.count, 0)
     }
 
     // MARK: ── 10. SPPF graph ──────────────────────────────────────────────────
 
     func testSPPFRootExists() throws {
         let parser = try makeParser("S ::= 'x' 'y' \n", start: "S")
-        guard case .success(_, let sppf) = parse(parser, "x y") else {
+        let result = parse(parser, "x y")
+        guard result.isSuccessful, let sppf = result.sppfGraph else {
             return XCTFail("Parse failed")
         }
         XCTAssertNotNil(sppf.root(startSymbol: "S", inputLength: 2))
@@ -317,7 +316,8 @@ final class RNGLRParserTests: XCTestCase {
 
     func testSPPFRootWrongLength() throws {
         let parser = try makeParser("S ::= 'x' \n", start: "S")
-        guard case .success(_, let sppf) = parse(parser, "x") else {
+        let result = parse(parser, "x")
+        guard result.isSuccessful, let sppf = result.sppfGraph else {
             return XCTFail("Parse failed")
         }
         XCTAssertNil(sppf.root(startSymbol: "S", inputLength: 99))
@@ -352,17 +352,17 @@ final class RNGLRParserTests: XCTestCase {
 
     func testEmptyNonNullable() throws {
         let parser = try makeParser("S ::= 'a' \n", start: "S")
-        if case .success = parse(parser, "") { XCTFail("Should fail on empty input") }
+        if parse(parser, "").isSuccessful { XCTFail("Should fail on empty input") }
     }
 
     func testExtraToken() throws {
         let parser = try makeParser("S ::= 'a' \n", start: "S")
-        if case .success = parse(parser, "a a") { XCTFail("Extra token should fail") }
+        if parse(parser, "a a").isSuccessful { XCTFail("Extra token should fail") }
     }
 
     func testUnknownToken() throws {
         let parser = try makeParser("S ::= 'a' 'b' \n", start: "S")
-        if case .success = parse(parser, "a z") { XCTFail("Unknown terminal should fail") }
+        if parse(parser, "a z").isSuccessful { XCTFail("Unknown terminal should fail") }
     }
 
     // MARK: ── 14. ParseResult.hasAmbiguity ───────────────────────────────────
@@ -417,7 +417,7 @@ final class RNGLRParserTests: XCTestCase {
         // "42" tokenises as .number(.decimal(42)) -> tokenKey -> "42"
         // Grammar terminal is 'n' which maps to "n", not "42"
         // So this should FAIL — verifying the tokenizer doesn't confuse 42 with 'n'
-        if case .success = parse(parser, "42") {
+        if parse(parser, "42").isSuccessful {
             XCTFail("'42' should not match terminal 'n'")
         }
     }
@@ -431,8 +431,8 @@ private func XCTAssertParseSucceeds(
     file:      StaticString = #file,
     line:      UInt         = #line
 ) {
-    let result = (try? parser.parse(input)) ?? .failure(position: -1, message: "threw")
-    if case .failure(let pos, let msg) = result {
-        XCTFail("Expected success but failed at \(pos): \(msg)", file: file, line: line)
+    let result = (try? parser.parse(input)) ?? ParseResult(isSuccessful: false, bsr: Set(), sppfGraph: nil)
+    if !result.isSuccessful {
+        XCTFail("Expected success but parse failed", file: file, line: line)
     }
 }

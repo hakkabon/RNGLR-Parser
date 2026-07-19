@@ -2,6 +2,7 @@ import Testing
 @testable import RNGLR_Parser
 import Grammar
 import Tokenizer
+import Parser
 
 @Suite("RNGLR Parser — Swift Testing suite")
 struct RNGLRTests {
@@ -13,18 +14,19 @@ struct RNGLRTests {
         return (RNGLRParser(grammar: grammar), grammar)
     }
 
-    /// Parse `input`, return (treeCount, bsr).
+    /// Parse `input`, return (treeCount, bsrCount).
     private func parseResult(_ bnf: String, start: String, input: String, tokenCount: Int)
-    throws -> (treeCount: Int, bsr: BSRSet) {
+    throws -> (treeCount: Int, bsrCount: Int) {
         let (parser, _) = try makeParser(bnf, start: start)
-        guard case .success(let bsr, let sppf) = try parser.parse(input),
-              let root = sppf.root(startSymbol: start, inputLength: tokenCount) else {
+        let result = try parser.parse(input)
+        guard result.isSuccessful, let sppf = result.sppfGraph,
+              sppf.root(startSymbol: start, inputLength: tokenCount) != nil else {
             Issue.record("Parse failed for input: '\(input)'")
-            return (0, BSRSet())
+            return (0, 0)
         }
-        var visited = Set<SPPFNode>()
-        let trees = CSTEnumerator(graph: sppf).trees(for: root, visited: &visited)
-        return (trees.count, bsr)
+        let ranges = parser.tokenize(input).filter { $0.type != .eof }.map(\.range)
+        let trees = sppf.buildAllParseTrees(startSymbol: start, ranges: ranges, string: input)
+        return (trees.count, result.bsr.count)
     }
 
     // MARK: ── Tokenizer: tokenKey mapping ─────────────────────────────────────
@@ -123,8 +125,8 @@ struct RNGLRTests {
             """, start: "S")
         let r1 = try parser.parse("a b")
         let r2 = try parser.parse("b")
-        if case .failure = r1 { Issue.record("a b should succeed") }
-        if case .failure = r2 { Issue.record("b should succeed (A → ε)") }
+        if !r1.isSuccessful { Issue.record("a b should succeed") }
+        if !r2.isSuccessful { Issue.record("b should succeed (A → ε)") }
     }
 
     @Test("Catalan 3: S → SS | a, 3 tokens → 2 trees")
@@ -156,26 +158,28 @@ struct RNGLRTests {
             C ::= ε
             """, start: "S")
         for input in ["a b c", "a b", "a c", "a"] {
-            if case .failure(let pos, let msg) = try parser.parse(input) {
-                Issue.record("'\(input)' failed at \(pos): \(msg)")
+            let result = try parser.parse(input)
+            if !result.isSuccessful {
+                Issue.record("'\(input)' failed to parse")
             }
         }
     }
 
     @Test("BSR set is non-empty on success")
     func bsrNonEmpty() throws {
-        let (_, bsr) = try parseResult("""
+        let (_, bsrCount) = try parseResult("""
             E ::= E '+' T
             E ::= T
             T ::= 'n'
             """, start: "E", input: "n + n", tokenCount: 3)
-        #expect(bsr.count > 0)
+        #expect(bsrCount > 0)
     }
 
     @Test("SPPF root exists at correct input length")
     func sppfRoot() throws {
         let (parser, _) = try makeParser("S ::= 'x' 'y' \n", start: "S")
-        guard case .success(_, let sppf) = try parser.parse("x y") else {
+        let result = try parser.parse("x y")
+        guard result.isSuccessful, let sppf = result.sppfGraph else {
             Issue.record("Parse failed"); return
         }
         #expect(sppf.root(startSymbol: "S", inputLength: 2) != nil)
@@ -209,6 +213,6 @@ struct RNGLRTests {
             S ::= 'while' '(' 'x' ')' '{' 'y' '}'
             """, start: "S")
         let result = try parser.parse("while ( x ) { y }")
-        if case .failure = result { Issue.record("while statement should parse") }
+        if !result.isSuccessful { Issue.record("while statement should parse") }
     }
 }
