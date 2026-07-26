@@ -6,7 +6,7 @@ let package = Package(
     platforms: [.macOS(.v13)],
     products: [
         .library(name: "RNGLR-Parser", targets: ["RNGLR-Parser"]),
-        .executable(name: "gtool", targets: ["gtool"]),
+        .executable(name: "rnglr-gtool", targets: ["rnglr-gtool"]),
         .executable(name: "demo", targets: ["demo"]),
     ],
     dependencies: [
@@ -41,7 +41,7 @@ let package = Package(
         ),
         // Move executable target to its destination (grammar toolbox) when library confirmed working.
         .executableTarget(
-            name: "gtool",
+            name: "rnglr-gtool",
             dependencies: [
                 "RNGLR-Parser",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
@@ -49,7 +49,8 @@ let package = Package(
                 .product(name: "Grammar", package: "Grammar"),
                 .product(name: "GrammarDiagram", package: "GrammarDiagram"),
                 .product(name: "Parser", package: "Parser"),
-            ]
+            ],
+            path: "Sources/gtool"
         ),
         .executableTarget(
             name: "demo",
@@ -61,6 +62,6 @@ let package = Package(
                 .product(name: "TerminalColors", package: "TerminalColors"),
                 .product(name: "Parser", package: "Parser"),
             ],
-        ),
+       ),
     ]
 )
