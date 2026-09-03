@@ -12,11 +12,11 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.6.2"),
         .package(url: "https://github.com/JohnSundell/ShellOut.git", from: "2.0.0"),
-        .package(url: "https://github.com/hakkabon/Grammar.git", revision: "69f85d7a493e1862412c34493e3656e94331df06"),
-        .package(url: "https://github.com/hakkabon/GrammarTokenizer.git", revision: "880af85a1f5809866f9656405c801fd04bcb4df9"),
-        .package(url: "https://github.com/hakkabon/GrammarDiagram.git", revision: "dc17ab061a1614ba0692be06aa69043b45bbbcd4"),
-        .package(url: "https://github.com/hakkabon/TerminalColors.git", from: "0.0.1"),
-        .package(url: "https://github.com/hakkabon/Parser.git", revision: "3663097550f3ed1b8dcad8a26f4c2c55cc61b4e1"),
+        .package(url: "https://github.com/hakkabon/Grammar.git", .upToNextMinor(from: "0.2.0")),
+        .package(url: "https://github.com/hakkabon/GrammarTokenizer.git", .upToNextMinor(from: "0.1.0")),
+        .package(url: "https://github.com/hakkabon/GrammarDiagram.git", .upToNextMinor(from: "0.1.0")),
+        .package(url: "https://github.com/hakkabon/TerminalColors.git", .upToNextMinor(from: "0.1.0")),
+        .package(url: "https://github.com/hakkabon/Parser.git", .upToNextMinor(from: "0.2.0")),
     ],
     targets: [
         .target(
