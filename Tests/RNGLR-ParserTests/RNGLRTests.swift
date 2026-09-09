@@ -216,3 +216,16 @@ struct RNGLRTests {
         if !result.isSuccessful { Issue.record("while statement should parse") }
     }
 }
+
+@Test("RNGLR exports a production-aware ambiguous forest")
+func portableParserContract() throws {
+    let grammar = try Grammar(bnf: "<E> ::= <E> '+' <E> | 'a'", start: "E")
+    let result = try RNGLRParser(grammar: grammar).parse("a + a + a")
+    let snapshot = try result.contractSnapshot(
+        engine: .init(identity: "rnglr", displayName: "RNGLR", algorithm: "rnglr")
+    )
+
+    #expect(snapshot.status == .accepted)
+    #expect(snapshot.isAmbiguous)
+    #expect(snapshot.forest?.nodes.contains { $0.productionID != nil } == true)
+}

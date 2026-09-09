@@ -75,8 +75,11 @@ extension GrammarSlot: Codable {}
 /// needs — the production's goal, its right-hand-side symbols, and the dot
 /// position — so conformance is a direct pass-through to the existing
 /// `production`/`dot` stored properties.
-extension GrammarSlot: SPPFLabel {
+extension GrammarSlot: ProductionIdentifiedSPPFLabel {
     public var goal: NonTerminal { production.goal }
     public var symbols: [Symbol] { production.rule }
     public var position: Int { dot }
+    public var productionID: GrammarProductionID {
+        GrammarProductionID(goal: goal, symbols: symbols)
+    }
 }
