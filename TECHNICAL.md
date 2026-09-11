@@ -450,6 +450,12 @@ The `throws` annotation signals that the tokenizer layer (not the GLR algorithm 
 
 ## 13. Known Limitations and Future Work
 
+The 0.2.1 correctness release made reduction closure an edge-driven fixed
+point and rejects SPPF candidates that begin before the production being
+expanded. Ambiguous left-recursive parses are therefore independent of hash
+iteration order, normalized symbolic-token inputs retain the complete Catalan
+forest, and portable snapshots contain only forward, valid extents.
+
 1. **SLR(1) tables only** — Some grammars need LALR(1) or LR(1) to avoid spurious conflicts. Performance degrades on larger conflict sets but correctness is preserved.
 2. **`tokenize()` is eager** — The full token array is materialised before parsing. A streaming design using `ParserInput` would reduce peak memory for large inputs.
 3. **No regex terminal matching at parse time** — `Terminal.regularExpression` values are registered but not used to classify tokens on-the-fly. A custom `TokenStream` subclass would be needed.

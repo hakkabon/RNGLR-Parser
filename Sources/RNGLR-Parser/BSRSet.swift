@@ -205,6 +205,13 @@ public final class BSRSet {
         }
 
         for (childNode, newRight) in resolveCandidates(for: sym, right: right, grammar: grammar, graph: graph) {
+            // A candidate ending at `right` may start before this production's
+            // own left extent because completed triples are indexed globally.
+            // Such a node belongs to an enclosing derivation. Attaching it here
+            // creates backwards intermediate extents and cycles in the SPPF,
+            // making tree enumeration hash-order dependent and causing the
+            // portable contract validator to reject the forest.
+            guard newRight >= leftExtent else { continue }
             if idx > 0,
                newRight == leftExtent,
                !symbolsCanDeriveEmpty(Array(rule[..<idx]), grammar: grammar) {
@@ -318,13 +325,11 @@ public final class BSRSet {
     }
 
     private func terminalString(_ t: Terminal) -> String {
-        switch t {
-        case .string(let s): return s
-        case .meta(let m): return m.rawValue
-        case .regularExpression(let re): return re.pattern
-        case .characterRange(let r): return "\(r.lowerBound)..\(r.upperBound)"
-        case .stringList(let list): return list.joined(separator: "|")
-        }
+        // Parser's shared SPPF traversal matches terminal children against
+        // `Terminal.description`; preserving that canonical spelling keeps
+        // punctuation/operator leaves in both legacy and production-aware
+        // trees instead of silently dropping them.
+        t.description
     }
 }
 

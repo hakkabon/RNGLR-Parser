@@ -229,3 +229,49 @@ func portableParserContract() throws {
     #expect(snapshot.isAmbiguous)
     #expect(snapshot.forest?.nodes.contains { $0.productionID != nil } == true)
 }
+
+@Test("RNGLR preserves ambiguity for normalized symbolic token names")
+func normalizedSymbolicTokenAmbiguity() throws {
+    let grammar = Grammar(
+        productions: [
+            Production(goal: NonTerminal(name: "Expression"), rule: [
+                .nonTerminal(NonTerminal(name: "Expression")),
+                .terminal(Terminal(string: "PLUS")),
+                .nonTerminal(NonTerminal(name: "Expression")),
+            ]),
+            Production(goal: NonTerminal(name: "Expression"), rule: [
+                .terminal(Terminal(string: "ID")),
+            ]),
+        ],
+        start: NonTerminal(name: "Expression"),
+        lexicalTokens: [:]
+    )
+
+    let parser = RNGLRParser(grammar: grammar)
+    let three = try parser.parse("ID PLUS ID PLUS ID")
+    let four = try parser.parse("ID PLUS ID PLUS ID PLUS ID")
+    let threeTrees = try parser.allSyntaxTrees(for: "ID PLUS ID PLUS ID")
+    let fourTrees = try parser.allSyntaxTrees(for: "ID PLUS ID PLUS ID PLUS ID")
+
+    #expect(three.isSuccessful)
+    #expect(threeTrees.count == 2)
+    #expect(threeTrees.allSatisfy { leafCount($0) == 5 })
+    #expect(four.isSuccessful)
+    #expect(four.bsr.count == 10)
+    #expect(fourTrees.count == 5)
+    #expect(fourTrees.allSatisfy { leafCount($0) == 7 })
+
+    let contract = try four.contractSnapshot(
+        engine: .init(identity: "rnglr", displayName: "RNGLR", algorithm: "rnglr")
+    )
+    #expect(contract.status == .accepted)
+    #expect(contract.isAmbiguous)
+}
+
+private func leafCount(_ tree: ParseTree) -> Int {
+    switch tree {
+    case .empty: 0
+    case .leaf: 1
+    case .node(_, let children): children.reduce(0) { $0 + leafCount($1) }
+    }
+}

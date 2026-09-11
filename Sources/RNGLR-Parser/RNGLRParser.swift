@@ -156,30 +156,28 @@ public final class RNGLRParser: DeterministicParser, GeneralizedParser {
             let lookupKey = automaton.resolveActionKey(forToken: termKey)
 
             // ── REDUCE phase ────────────────────────────────────────────────
-            var reductions:         [Descriptor]    = []
-            var processedReductions: Set<Descriptor> = []
-
-            for node in frontier {
-                let acts = automaton.actions(state: node.state, terminal: lookupKey)
-                for act in acts {
-                    if case .reduce(let prod) = act {
-                        let d = Descriptor(node: node, prod: prod, extent: i)
-                        if processedReductions.insert(d).inserted {
-                            reductions.append(d)
+            // Reductions form a fixed point at each input position. Adding a
+            // GSS edge can expose a new path not only for the reduction that
+            // created it, but also for a previously visited ancestor node.
+            // Recompute the finite descriptor set until no edge is added.
+            // This makes generalized parsing independent of Set iteration
+            // order and retains every ambiguous derivation.
+            var reductionChanged = true
+            while reductionChanged {
+                reductionChanged = false
+                var descriptors: Set<Descriptor> = []
+                for node in frontier {
+                    for act in automaton.actions(state: node.state, terminal: lookupKey) {
+                        if case .reduce(let prod) = act {
+                            descriptors.insert(Descriptor(node: node, prod: prod, extent: i))
                         }
                     }
                 }
-            }
-
-            while let desc = reductions.popLast() {
-                processReduce(
-                    desc:       desc,
-                    position:   i,
-                    termKey:    lookupKey,
-                    frontier:   &frontier,
-                    reductions: &reductions,
-                    processed:  &processedReductions
-                )
+                for descriptor in descriptors {
+                    if processReduce(desc: descriptor, position: i, frontier: &frontier) {
+                        reductionChanged = true
+                    }
+                }
             }
 
             // ── Accept check on EOF sentinel ─────────────────────────────────
@@ -348,14 +346,12 @@ public final class RNGLRParser: DeterministicParser, GeneralizedParser {
     private func processReduce(
         desc:       Descriptor,
         position:   Int,
-        termKey:    String,          // Resolved ACTION-table lookup key for the current look-ahead token (see resolveActionKey(forToken:))
-        frontier:   inout Set<GSSNode>,
-        reductions: inout [Descriptor],
-        processed:  inout Set<Descriptor>
-    ) {
+        frontier:   inout Set<GSSNode>
+    ) -> Bool {
         let (topNode, prod, rightExtent) = (desc.node, desc.prod, desc.extent)
         let completedSlot = GrammarSlot(production: prod, dot: prod.rule.count)
         let popCount      = effectivePopCount(prod)
+        var addedEdge = false
 
         for (predecessor, leftExtent, _) in gssPathsOfLength(from: topNode, length: popCount) {
             bsr.add(slot: completedSlot, leftExtent: leftExtent, rightExtent: rightExtent)
@@ -374,19 +370,9 @@ public final class RNGLRParser: DeterministicParser, GeneralizedParser {
             let isNew = gss.addEdge(from: newNode, to: predecessor, label: symNode)
 
             frontier.insert(newNode)
-
-            if isNew {
-                let acts = automaton.actions(state: gotoState, terminal: termKey)
-                for act in acts {
-                    if case .reduce(let newProd) = act {
-                        let d = Descriptor(node: newNode, prod: newProd, extent: position)
-                        if processed.insert(d).inserted {
-                            reductions.append(d)
-                        }
-                    }
-                }
-            }
+            addedEdge = addedEdge || isNew
         }
+        return addedEdge
     }
 
     /// Number of GSS edges to pop for `prod`.
