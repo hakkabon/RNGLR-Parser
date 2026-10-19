@@ -28,7 +28,7 @@ let package = Package(
                 .product(name: "TerminalColors", package: "TerminalColors"),
                 .product(name: "Parser", package: "Parser"),
             ],
-            path: "Sources/RNGLR-Parser",
+            path: "Sources/RNGLR-Parser"
         ),
         .testTarget(
             name: "RNGLR-ParserTests",
@@ -61,7 +61,7 @@ let package = Package(
                 .product(name: "GrammarDiagram", package: "GrammarDiagram"),
                 .product(name: "TerminalColors", package: "TerminalColors"),
                 .product(name: "Parser", package: "Parser"),
-            ],
+            ]
        ),
     ]
 )
