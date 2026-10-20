@@ -4,6 +4,10 @@ A Swift implementation of the **Right Nulled Generalised LR (RNGLR)** parsing al
 
 The parser handles **all context-free grammars** — including ambiguous, left-recursive, and nullable ones — in worst-case *O(n³)* time while running in linear time on deterministic grammars. Grammar types are provided by the [Grammar](https://github.com/hakkabon/Grammar) package.
 
+Release 0.2.3 owns an executable ambiguous-forest workload. Run
+`swift run -c release rnglr-microbenchmark [report.json]`; the timed boundary
+includes GSS, BSR, and SPPF construction and preserves ambiguity evidence.
+
 [![Swift 5.9+](https://img.shields.io/badge/Swift-5.9%2B-orange.svg)](https://swift.org)  
 [![Platforms](https://img.shields.io/badge/platforms-macOS%2011%20%7C%20iOS%2014-blue.svg)](https://developer.apple.com/swift/)  
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)  
@@ -101,7 +105,7 @@ case .failure(let pos, let msg):
 ```swift
 // Package.swift
 dependencies: [
-    .package(url: "https://github.com/hakkabon/RNGLR-Parser.git",       branch: "main"),
+    .package(url: "https://github.com/hakkabon/RNGLR-Parser.git",       .upToNextMinor(from: "0.2.3")),
     .package(url: "https://github.com/hakkabon/Grammar.git",            branch: "main"),
     .package(url: "https://github.com/hakkabon/GrammarTokenizer.git",   branch: "main"),
 ],

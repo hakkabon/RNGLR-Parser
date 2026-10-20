@@ -8,6 +8,7 @@ let package = Package(
         .library(name: "RNGLR-Parser", targets: ["RNGLR-Parser"]),
         .executable(name: "rnglr-gtool", targets: ["rnglr-gtool"]),
         .executable(name: "demo", targets: ["demo"]),
+        .executable(name: "rnglr-microbenchmark", targets: ["rnglr-microbenchmark"]),
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.6.2"),
@@ -16,7 +17,7 @@ let package = Package(
         .package(url: "https://github.com/hakkabon/GrammarTokenizer.git", .upToNextMinor(from: "0.1.0")),
         .package(url: "https://github.com/hakkabon/GrammarDiagram.git", .upToNextMinor(from: "0.1.0")),
         .package(url: "https://github.com/hakkabon/TerminalColors.git", .upToNextMinor(from: "0.1.0")),
-        .package(url: "https://github.com/hakkabon/Parser.git", .upToNextMinor(from: "0.3.0")),
+        .package(url: "https://github.com/hakkabon/Parser.git", .upToNextMinor(from: "0.4.1")),
     ],
     targets: [
         .target(
@@ -40,6 +41,13 @@ let package = Package(
             path: "Tests/RNGLR-ParserTests"
         ),
         // Move executable target to its destination (grammar toolbox) when library confirmed working.
+        .executableTarget(
+            name: "rnglr-microbenchmark",
+            dependencies: [
+                "RNGLR-Parser",
+                .product(name: "Parser", package: "Parser"),
+            ]
+        ),
         .executableTarget(
             name: "rnglr-gtool",
             dependencies: [
