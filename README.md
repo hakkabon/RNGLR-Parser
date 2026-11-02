@@ -1,5 +1,9 @@
 # RNGLR Parser
 
+`RNGLRIncrementalWorkspace` provides separate identity-preserving arenas for
+GSS and packed-forest nodes. Token dependency invalidation removes affected
+components and graph parents while retaining independent node instances.
+
 A Swift implementation of the **Right Nulled Generalised LR (RNGLR)** parsing algorithm (Scott & Johnstone, 2006), extended with a full tokenizer pipeline powered by the [GrammarTokenizer](https://github.com/hakkabon/GrammarTokenizer) package.
 
 The parser handles **all context-free grammars** — including ambiguous, left-recursive, and nullable ones — in worst-case *O(n³)* time while running in linear time on deterministic grammars. Grammar types are provided by the [Grammar](https://github.com/hakkabon/Grammar) package.
