@@ -1,4 +1,9 @@
 import Foundation
+import IncrementalParsing
+
+public extension ReuseDimension {
+    static let gssNodes = Self(rawValue: "gssNodes")
+}
 
 public struct RNGLRStableTokenID: Hashable, Sendable {
     public let rawValue: String
@@ -31,6 +36,43 @@ public final class RNGLRReusableNode<Payload> {
 public struct RNGLRReuseEvidence: Sendable {
     public let invalidated: Set<RNGLRReusableNodeID>
     public let retained: Set<RNGLRReusableNodeID>
+
+    fileprivate func measurement(
+        dimension: ReuseDimension,
+        rebuilt: Int,
+        strategy: String
+    ) -> ReuseMeasurement {
+        precondition(rebuilt >= 0, "rebuilt node count cannot be negative")
+        return .init(
+            dimension: dimension,
+            reused: retained.count,
+            rebuilt: rebuilt,
+            removed: invalidated.count,
+            strategy: strategy)
+    }
+}
+
+public struct RNGLRWorkspaceInvalidation: Sendable {
+    public let graph: RNGLRReuseEvidence
+    public let forest: RNGLRReuseEvidence
+
+    public func executionEvidence(
+        rebuiltGraphNodes: Int,
+        rebuiltForestNodes: Int
+    ) -> IncrementalExecutionEvidence {
+        .init(
+            strategy: .incremental,
+            measurements: [
+                graph.measurement(
+                    dimension: .gssNodes,
+                    rebuilt: rebuiltGraphNodes,
+                    strategy: "gss-dependency-invalidation"),
+                forest.measurement(
+                    dimension: .forestNodes,
+                    rebuilt: rebuiltForestNodes,
+                    strategy: "sppf-dependency-invalidation"),
+            ])
+    }
 }
 
 /// Interns graph nodes by grammar/state/span identity. Surviving nodes retain
@@ -39,6 +81,7 @@ public final class RNGLRReuseArena<Payload> {
     private var nodes: [RNGLRReusableNodeID: RNGLRReusableNode<Payload>] = [:]
     public init() {}
     public var count: Int { nodes.count }
+    public var nodeIDs: Set<RNGLRReusableNodeID> { Set(nodes.keys) }
     public subscript(id: RNGLRReusableNodeID) -> RNGLRReusableNode<Payload>? { nodes[id] }
 
     @discardableResult
@@ -78,6 +121,8 @@ public final class RNGLRReuseArena<Payload> {
         for id in invalid { nodes.removeValue(forKey: id) }
         return .init(invalidated: invalid, retained: Set(nodes.keys))
     }
+
+    public func removeAll() { nodes.removeAll() }
 }
 
 /// GSS topology and packed-forest topology have distinct arenas, but consume
@@ -85,9 +130,54 @@ public final class RNGLRReuseArena<Payload> {
 public final class RNGLRIncrementalWorkspace<GSSPayload, ForestPayload> {
     public let graph = RNGLRReuseArena<GSSPayload>()
     public let forest = RNGLRReuseArena<ForestPayload>()
+    public private(set) var artifactIdentity: IncrementalArtifactIdentity?
     public init() {}
+
+    /// Establishes the grammar/automaton identity for both native arenas.
+    /// Rebinding to a different artifact invalidates graph and forest together.
+    @discardableResult
+    public func bind(
+        to artifact: IncrementalArtifactIdentity
+    ) -> IncrementalExecutionEvidence? {
+        if let current = artifactIdentity, current == artifact { return nil }
+        let graphRemoved = graph.count
+        let forestRemoved = forest.count
+        let wasBound = artifactIdentity != nil
+        graph.removeAll()
+        forest.removeAll()
+        artifactIdentity = artifact
+        let measurements = [
+            ReuseMeasurement(
+                dimension: .gssNodes, reused: 0, rebuilt: 0,
+                removed: graphRemoved, strategy: "gss-dependency-invalidation"),
+            ReuseMeasurement(
+                dimension: .forestNodes, reused: 0, rebuilt: 0,
+                removed: forestRemoved, strategy: "sppf-dependency-invalidation"),
+        ]
+        if wasBound {
+            return .init(
+                strategy: .fallback,
+                fallback: .incompatibleArtifact,
+                measurements: measurements)
+        }
+        return .init(strategy: .full, measurements: measurements)
+    }
+
     public func invalidate(tokens changed: Set<RNGLRStableTokenID>) ->
         (graph: RNGLRReuseEvidence, forest: RNGLRReuseEvidence) {
         (graph.invalidate(tokens: changed), forest.invalidate(tokens: changed))
+    }
+
+    public func invalidateWithEvidence(
+        tokens changed: Set<RNGLRStableTokenID>
+    ) -> RNGLRWorkspaceInvalidation {
+        let invalidation = invalidate(tokens: changed)
+        return .init(graph: invalidation.graph, forest: invalidation.forest)
+    }
+
+    public func reset() {
+        graph.removeAll()
+        forest.removeAll()
+        artifactIdentity = nil
     }
 }

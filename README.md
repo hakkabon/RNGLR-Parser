@@ -3,6 +3,10 @@
 `RNGLRIncrementalWorkspace` provides separate identity-preserving arenas for
 GSS and packed-forest nodes. Token dependency invalidation removes affected
 components and graph parents while retaining independent node instances.
+Phase 11 binds both arenas atomically to a stable automaton identity and reports
+GSS and SPPF reuse through shared `IncrementalExecutionEvidence`.
+
+See [Native generalized reuse](Documentation/NativeGeneralizedReuse.md).
 
 A Swift implementation of the **Right Nulled Generalised LR (RNGLR)** parsing algorithm (Scott & Johnstone, 2006), extended with a full tokenizer pipeline powered by the [GrammarTokenizer](https://github.com/hakkabon/GrammarTokenizer) package.
 

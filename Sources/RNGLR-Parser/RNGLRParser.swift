@@ -10,6 +10,7 @@ import Foundation
 import Grammar
 import Tokenizer
 import Parser
+import IncrementalParsing
 
 // MARK: - Descriptor
 
@@ -90,6 +91,38 @@ public final class RNGLRParser: DeterministicParser, GeneralizedParser {
     public init(grammar: Grammar, automaton: LRAutomaton) {
         self.grammar   = grammar
         self.automaton = automaton
+    }
+
+    /// Stable semantic identity used to guard GSS and SPPF reuse. The
+    /// automaton is derived exclusively from this normalized grammar content.
+    public var incrementalArtifactIdentity: IncrementalArtifactIdentity {
+        func frame(_ value: String) -> String { "\(value.utf8.count):\(value)" }
+        func actionKey(_ action: LRAction) -> String {
+            switch action {
+            case .shift(let state): return "shift:\(state)"
+            case .reduce(let production):
+                return "reduce:" + GrammarProductionID(
+                    goal: production.goal, symbols: production.rule).rawValue
+            case .accept: return "accept"
+            case .error: return "error"
+            }
+        }
+        let productions = grammar.productions.map {
+            GrammarProductionID(goal: $0.goal, symbols: $0.rule).rawValue
+        }.map(frame).joined()
+        let actions = automaton.action.enumerated().flatMap { state, cells in
+            cells.keys.sorted().map { terminal in
+                "\(state):" + frame(terminal)
+                    + cells[terminal, default: []].map(actionKey).sorted().map(frame).joined()
+            }
+        }.joined(separator: "|")
+        let gotos = automaton.goto.enumerated().flatMap { state, cells in
+            cells.keys.sorted().map { nonterminal in
+                "\(state):" + frame(nonterminal) + ":\(cells[nonterminal]!)"
+            }
+        }.joined(separator: "|")
+        let fingerprint = "rnglr-automaton-v1;S\(frame(grammar.start.name));P\(frame(productions));A\(frame(actions));G\(frame(gotos))"
+        return .init(id: "rnglr.automaton", revision: 0, fingerprint: fingerprint)
     }
 
     // MARK: - DeterministicParser / GeneralizedParser protocols

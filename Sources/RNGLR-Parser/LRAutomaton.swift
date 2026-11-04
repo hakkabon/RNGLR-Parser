@@ -209,7 +209,13 @@ public final class LRAutomaton {
                     bySymbol[sym, default: []].insert(item.advanced())
                 }
             }
-            for (_, kernelItems) in bySymbol {
+            // State numbers are part of reusable GSS identity. Dictionary and
+            // Set iteration order is process-randomized, so discover successor
+            // states in a stable grammar-symbol order.
+            for symbol in bySymbol.keys.sorted(by: {
+                Self.stableSymbolKey($0) < Self.stableSymbolKey($1)
+            }) {
+                guard let kernelItems = bySymbol[symbol] else { continue }
                 let stateCountBefore = states.count
                 let newState = makeState(kernel: kernelItems)
                 // State identity alone cannot tell whether makeState created a
@@ -405,6 +411,28 @@ public final class LRAutomaton {
             case .eps, .empty, .lambda:  return "ε"
             case .eof, .eop:             return "$"
             }
+        }
+    }
+
+    private static func stableSymbolKey(_ symbol: Symbol) -> String {
+        func frame(_ value: String) -> String { "\(value.utf8.count):\(value)" }
+        switch symbol {
+        case .terminal(let terminal):
+            let key: String
+            switch terminal {
+            case .string(let value): key = "string:" + frame(value)
+            case .characterRange(let range):
+                key = "range:" + frame(String(range.lowerBound))
+                    + frame(String(range.upperBound))
+            case .stringList(let values):
+                key = "list:" + values.map(frame).joined()
+            case .regularExpression(let expression):
+                key = "regex:" + frame(expression.pattern)
+            case .meta(let meta): key = "meta:" + frame(meta.rawValue)
+            }
+            return "0:" + frame(key)
+        case .nonTerminal(let nonterminal): return "1:" + frame(nonterminal.name)
+        case .metaSymbol(let meta): return "2:" + frame(meta.rawValue)
         }
     }
 }
