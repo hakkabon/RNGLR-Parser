@@ -64,7 +64,7 @@ private struct Descriptor: Hashable {
 public final class RNGLRParser: DeterministicParser, GeneralizedParser {
     public typealias Label = GrammarSlot
 
-    private let grammar:   Grammar
+    let grammar:   Grammar
     private let automaton: LRAutomaton
 
     // Persistent GSS and BSR – reset on each parse() call.
