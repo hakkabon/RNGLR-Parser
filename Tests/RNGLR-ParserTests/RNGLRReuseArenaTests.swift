@@ -136,4 +136,65 @@ final class RNGLRReuseArenaTests: XCTestCase {
             evidence.measurements.first { $0.dimension == .forestNodes }?.reused,
             1)
     }
+
+    func testGrammarTransitionDropsGSSButRetainsUnrelatedForest() throws {
+        let old = try Grammar(bnf: """
+            S ::= B
+            B ::= 'b'
+            U ::= 'u'
+            """, start: "S")
+        let changed = try Grammar(bnf: """
+            S ::= B
+            B ::= 'b' | 'other'
+            U ::= 'u'
+            """, start: "S")
+        let workspace = RNGLRIncrementalWorkspace<String, String>()
+        let first = IncrementalArtifactIdentity(
+            id: "rnglr.automaton", revision: 1, fingerprint: "automaton-1")
+        let second = IncrementalArtifactIdentity(
+            id: "rnglr.automaton", revision: 2, fingerprint: "automaton-2")
+        _ = workspace.bind(to: first, grammar: old)
+
+        let head = workspace.graph.intern(id: .init("head"), payload: "head")
+        let affected = workspace.forest.intern(
+            id: .init("B"), payload: "B",
+            productionDependencies: [GrammarProductionID(old.productions[1])])
+        let stable = workspace.forest.intern(
+            id: .init("U"), payload: "U",
+            productionDependencies: [GrammarProductionID(old.productions[2])])
+
+        let transition = workspace.transition(
+            to: second,
+            targetGrammar: changed,
+            change: old.changeSet(to: changed),
+            rebuiltGraphNodes: 1,
+            rebuiltForestNodes: 2)
+
+        XCTAssertTrue(transition.appliedIncrementally)
+        XCTAssertTrue(transition.invalidation.graph.invalidated.contains(head.id))
+        XCTAssertTrue(transition.invalidation.forest.invalidated.contains(affected.id))
+        XCTAssertTrue(workspace.forest[stable.id] === stable)
+        XCTAssertEqual(transition.evidence.strategy, .incremental)
+    }
+
+    func testGrammarTransitionFailsClosedEvenWhenArtifactIdentityIsUnchanged() throws {
+        let old = try Grammar(bnf: "S ::= 'a'", start: "S")
+        let unrelated = try Grammar(bnf: "S ::= 'b'", start: "S")
+        let workspace = RNGLRIncrementalWorkspace<String, String>()
+        let artifact = IncrementalArtifactIdentity(
+            id: "rnglr.automaton", revision: 1, fingerprint: "automaton")
+        _ = workspace.bind(to: artifact, grammar: old)
+        _ = workspace.graph.intern(id: .init("head"), payload: "head")
+        _ = workspace.forest.intern(id: .init("forest"), payload: "forest")
+
+        let transition = workspace.transition(
+            to: artifact,
+            targetGrammar: old,
+            change: old.changeSet(to: unrelated))
+
+        XCTAssertFalse(transition.appliedIncrementally)
+        XCTAssertEqual(transition.evidence.strategy, .fallback)
+        XCTAssertEqual(workspace.graph.count, 0)
+        XCTAssertEqual(workspace.forest.count, 0)
+    }
 }

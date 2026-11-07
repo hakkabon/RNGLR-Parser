@@ -1,5 +1,6 @@
 import Foundation
 import IncrementalParsing
+import Grammar
 
 public extension ReuseDimension {
     static let gssNodes = Self(rawValue: "gssNodes")
@@ -20,16 +21,22 @@ public final class RNGLRReusableNode<Payload> {
     public private(set) var payload: Payload
     public private(set) var tokenDependencies: Set<RNGLRStableTokenID>
     public private(set) var outgoing: Set<RNGLRReusableNodeID>
+    public private(set) var productionDependencies: Set<GrammarProductionID>
 
     fileprivate init(id: RNGLRReusableNodeID, payload: Payload,
-                     tokenDependencies: Set<RNGLRStableTokenID>, outgoing: Set<RNGLRReusableNodeID>) {
+                     tokenDependencies: Set<RNGLRStableTokenID>,
+                     outgoing: Set<RNGLRReusableNodeID>,
+                     productionDependencies: Set<GrammarProductionID>) {
         self.id = id; self.payload = payload
         self.tokenDependencies = tokenDependencies; self.outgoing = outgoing
+        self.productionDependencies = productionDependencies
     }
 
     fileprivate func update(payload: Payload, tokenDependencies: Set<RNGLRStableTokenID>,
-                            outgoing: Set<RNGLRReusableNodeID>) {
+                            outgoing: Set<RNGLRReusableNodeID>,
+                            productionDependencies: Set<GrammarProductionID>) {
         self.payload = payload; self.tokenDependencies = tokenDependencies; self.outgoing = outgoing
+        self.productionDependencies = productionDependencies
     }
 }
 
@@ -75,6 +82,12 @@ public struct RNGLRWorkspaceInvalidation: Sendable {
     }
 }
 
+public struct RNGLRGrammarTransition: Sendable {
+    public let invalidation: RNGLRWorkspaceInvalidation
+    public let evidence: IncrementalExecutionEvidence
+    public let appliedIncrementally: Bool
+}
+
 /// Interns graph nodes by grammar/state/span identity. Surviving nodes retain
 /// their class identity across edits; affected nodes and their parents do not.
 public final class RNGLRReuseArena<Payload> {
@@ -87,10 +100,12 @@ public final class RNGLRReuseArena<Payload> {
     @discardableResult
     public func intern(id: RNGLRReusableNodeID, payload: @autoclosure () -> Payload,
                        tokenDependencies: Set<RNGLRStableTokenID> = [],
-                       outgoing: Set<RNGLRReusableNodeID> = []) -> RNGLRReusableNode<Payload> {
+                       outgoing: Set<RNGLRReusableNodeID> = [],
+                       productionDependencies: Set<GrammarProductionID> = []) -> RNGLRReusableNode<Payload> {
         if let existing = nodes[id] { return existing }
         let node = RNGLRReusableNode(id: id, payload: payload(),
-                                    tokenDependencies: tokenDependencies, outgoing: outgoing)
+                                    tokenDependencies: tokenDependencies, outgoing: outgoing,
+                                    productionDependencies: productionDependencies)
         nodes[id] = node
         return node
     }
@@ -98,19 +113,50 @@ public final class RNGLRReuseArena<Payload> {
     @discardableResult
     public func replace(id: RNGLRReusableNodeID, payload: Payload,
                         tokenDependencies: Set<RNGLRStableTokenID> = [],
-                        outgoing: Set<RNGLRReusableNodeID> = []) -> RNGLRReusableNode<Payload> {
+                        outgoing: Set<RNGLRReusableNodeID> = [],
+                        productionDependencies: Set<GrammarProductionID> = []) -> RNGLRReusableNode<Payload> {
         if let existing = nodes[id] {
-            existing.update(payload: payload, tokenDependencies: tokenDependencies, outgoing: outgoing)
+            existing.update(
+                payload: payload, tokenDependencies: tokenDependencies,
+                outgoing: outgoing,
+                productionDependencies: productionDependencies)
             return existing
         }
-        return intern(id: id, payload: payload, tokenDependencies: tokenDependencies, outgoing: outgoing)
+        return intern(
+            id: id, payload: payload, tokenDependencies: tokenDependencies,
+            outgoing: outgoing,
+            productionDependencies: productionDependencies)
     }
 
     @discardableResult
     public func invalidate(tokens changed: Set<RNGLRStableTokenID>) -> RNGLRReuseEvidence {
-        var invalid = Set(nodes.values.lazy.filter {
+        let seeds = Set(nodes.values.lazy.filter {
             !$0.tokenDependencies.isDisjoint(with: changed)
         }.map(\.id))
+        return invalidate(seedNodes: seeds)
+    }
+
+    @discardableResult
+    public func invalidate(
+        productions changed: Set<GrammarProductionID>
+    ) -> RNGLRReuseEvidence {
+        let seeds = Set(nodes.values.lazy.filter {
+            !$0.productionDependencies.isDisjoint(with: changed)
+        }.map(\.id))
+        return invalidate(seedNodes: seeds)
+    }
+
+    @discardableResult
+    public func invalidateAll() -> RNGLRReuseEvidence {
+        let invalidated = Set(nodes.keys)
+        nodes.removeAll()
+        return .init(invalidated: invalidated, retained: [])
+    }
+
+    private func invalidate(
+        seedNodes: Set<RNGLRReusableNodeID>
+    ) -> RNGLRReuseEvidence {
+        var invalid = seedNodes
         var grew = true
         while grew {
             grew = false
@@ -131,6 +177,7 @@ public final class RNGLRIncrementalWorkspace<GSSPayload, ForestPayload> {
     public let graph = RNGLRReuseArena<GSSPayload>()
     public let forest = RNGLRReuseArena<ForestPayload>()
     public private(set) var artifactIdentity: IncrementalArtifactIdentity?
+    public private(set) var grammarFingerprint: String?
     public init() {}
 
     /// Establishes the grammar/automaton identity for both native arenas.
@@ -139,13 +186,36 @@ public final class RNGLRIncrementalWorkspace<GSSPayload, ForestPayload> {
     public func bind(
         to artifact: IncrementalArtifactIdentity
     ) -> IncrementalExecutionEvidence? {
-        if let current = artifactIdentity, current == artifact { return nil }
+        bind(to: artifact, grammarFingerprint: nil)
+    }
+
+    /// Binds both the automaton identity and the source grammar fingerprint,
+    /// enabling a later verified grammar-delta transition.
+    @discardableResult
+    public func bind(
+        to artifact: IncrementalArtifactIdentity,
+        grammar: Grammar
+    ) -> IncrementalExecutionEvidence? {
+        bind(
+            to: artifact,
+            grammarFingerprint: grammar.incrementalSemanticFingerprint)
+    }
+
+    private func bind(
+        to artifact: IncrementalArtifactIdentity,
+        grammarFingerprint newGrammarFingerprint: String?
+    ) -> IncrementalExecutionEvidence? {
+        if let current = artifactIdentity, current == artifact {
+            if let newGrammarFingerprint { grammarFingerprint = newGrammarFingerprint }
+            return nil
+        }
         let graphRemoved = graph.count
         let forestRemoved = forest.count
         let wasBound = artifactIdentity != nil
         graph.removeAll()
         forest.removeAll()
         artifactIdentity = artifact
+        grammarFingerprint = newGrammarFingerprint
         let measurements = [
             ReuseMeasurement(
                 dimension: .gssNodes, reused: 0, rebuilt: 0,
@@ -175,9 +245,78 @@ public final class RNGLRIncrementalWorkspace<GSSPayload, ForestPayload> {
         return .init(graph: invalidation.graph, forest: invalidation.forest)
     }
 
+    /// Applies a verified grammar delta. GSS nodes are conservatively dropped
+    /// because regenerated automaton state numbers have no stable mapping;
+    /// production-independent SPPF nodes may survive.
+    public func transition(
+        to artifact: IncrementalArtifactIdentity,
+        targetGrammar: Grammar,
+        change: GrammarChangeSet,
+        rebuiltGraphNodes: Int = 0,
+        rebuiltForestNodes: Int = 0
+    ) -> RNGLRGrammarTransition {
+        let targetFingerprint = targetGrammar.incrementalSemanticFingerprint
+        guard grammarFingerprint == change.sourceFingerprint,
+              targetFingerprint == change.targetFingerprint else {
+            let graphIDs = graph.nodeIDs
+            let forestIDs = forest.nodeIDs
+            let wasBound = artifactIdentity != nil
+            graph.removeAll()
+            forest.removeAll()
+            artifactIdentity = artifact
+            grammarFingerprint = targetFingerprint
+            let measurements = [
+                ReuseMeasurement(
+                    dimension: .gssNodes, reused: 0, rebuilt: rebuiltGraphNodes,
+                    removed: graphIDs.count,
+                    strategy: "gss-dependency-invalidation"),
+                ReuseMeasurement(
+                    dimension: .forestNodes, reused: 0, rebuilt: rebuiltForestNodes,
+                    removed: forestIDs.count,
+                    strategy: "sppf-dependency-invalidation"),
+            ]
+            let evidence = wasBound
+                ? IncrementalExecutionEvidence(
+                    strategy: .fallback,
+                    fallback: .incompatibleArtifact,
+                    measurements: measurements)
+                : IncrementalExecutionEvidence(
+                    strategy: .full,
+                    measurements: measurements)
+            return .init(
+                invalidation: .init(
+                    graph: .init(invalidated: graphIDs, retained: []),
+                    forest: .init(invalidated: forestIDs, retained: [])),
+                evidence: evidence,
+                appliedIncrementally: false)
+        }
+
+        let invalidation = RNGLRWorkspaceInvalidation(
+            graph: graph.invalidateAll(),
+            forest: forest.invalidate(
+                productions: change.invalidatedProductionIDSet))
+        artifactIdentity = artifact
+        grammarFingerprint = targetFingerprint
+        let workspaceEvidence = invalidation.executionEvidence(
+            rebuiltGraphNodes: rebuiltGraphNodes,
+            rebuiltForestNodes: rebuiltForestNodes)
+        return .init(
+            invalidation: invalidation,
+            evidence: .init(
+                strategy: .incremental,
+                measurements: workspaceEvidence.measurements + [ReuseMeasurement(
+                    dimension: .grammarProductions,
+                    reused: change.retainedProductionIDs.count,
+                    rebuilt: change.addedProductionIDs.count,
+                    removed: change.removedProductionIDs.count,
+                    strategy: "structural-grammar-delta")]),
+            appliedIncrementally: true)
+    }
+
     public func reset() {
         graph.removeAll()
         forest.removeAll()
         artifactIdentity = nil
+        grammarFingerprint = nil
     }
 }
