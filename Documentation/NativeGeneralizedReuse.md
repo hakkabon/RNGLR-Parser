@@ -21,5 +21,12 @@ forest reuse into the shared Phase 9 evidence schema. Differential tests compare
 the rebuilt topology and payloads with clean reconstruction while also checking
 that retained nodes preserve object identity.
 
-Stable token identity remains a lexer or language-kit responsibility; RNGLR
-does not infer continuity from token text or source offsets.
+Phase 26 makes the workspace operational through `RNGLRIncrementalSession`.
+The session retains native prefix GSS/BSR state, reconstructs the shifted
+restart boundary, replays lookahead-sensitive reductions, and verifies its BSR
+and SPPF against clean parsing in differential tests. Callers may supply stable
+token identities; otherwise the session conservatively aligns equal prefix and
+suffix token keys while reusing only the prefix parser state.
+
+The current returned `SPPFGraph` is reconstructed from the combined BSR set;
+its projection objects are not yet retained across parses.

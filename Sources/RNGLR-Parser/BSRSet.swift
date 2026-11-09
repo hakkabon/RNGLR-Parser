@@ -53,6 +53,13 @@ public final class BSRSet {
 
     public func reset() { triples.removeAll() }
 
+    /// Retains only completions established strictly before a restart
+    /// position. A completion ending at the boundary may have been selected
+    /// by the old lookahead and must therefore be replayed.
+    func retain(rightExtentBefore position: Int) {
+        triples = triples.filter { $0.rightExtent < position }
+    }
+
     /// Best-effort conversion to the shared module's `BSR<GrammarSlot>`
     /// record, for diagnostic/inspection purposes only (e.g. `gtool`'s
     /// `--analysis sppf` output, or `ParseResult.bsr`). RNGLR's own

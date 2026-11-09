@@ -4,6 +4,66 @@ import Grammar
 @testable import RNGLR_Parser
 
 final class RNGLRReuseArenaTests: XCTestCase {
+    func testLiveSessionResumesGSSAndMatchesCleanRNGLRParse() throws {
+        let grammar = try Grammar(bnf: """
+            S ::= 'a' X 'c'
+            X ::= 'b' | 'd'
+            """, start: "S")
+        let session = RNGLRIncrementalSession(grammar: grammar)
+        XCTAssertTrue(try session.parse("a b c").result.isSuccessful)
+
+        let incremental = try session.parse("a d c")
+        let clean = try RNGLRParser(grammar: grammar).parse("a d c")
+
+        XCTAssertTrue(incremental.result.isSuccessful)
+        XCTAssertEqual(incremental.restartTokenIndex, 1)
+        XCTAssertEqual(incremental.result.bsr, clean.bsr)
+        XCTAssertEqual(
+            try incremental.result.sppfGraph?.portableSnapshot(),
+            try clean.sppfGraph?.portableSnapshot())
+        XCTAssertGreaterThan(
+            incremental.evidence.measurements.first {
+                $0.dimension == .gssNodes
+            }?.reused ?? 0, 0)
+        XCTAssertGreaterThan(
+            incremental.evidence.measurements.first {
+                $0.dimension == .forestNodes
+            }?.rebuilt ?? 0, 0)
+    }
+
+    func testLiveSessionReusesWholeResultForUnchangedInput() throws {
+        let grammar = try Grammar(bnf: "S ::= 'a' 'b'", start: "S")
+        let session = RNGLRIncrementalSession(grammar: grammar)
+        _ = try session.parse("a b")
+        let repeated = try session.parse("a b")
+        XCTAssertEqual(repeated.restartTokenIndex, 2)
+        XCTAssertEqual(
+            repeated.evidence.measurements.first { $0.dimension == .tokens }?.reused,
+            2)
+        XCTAssertEqual(
+            repeated.evidence.measurements.first { $0.dimension == .gssNodes }?.rebuilt,
+            0)
+    }
+
+    func testLiveSessionRecoversAfterRejectedEdit() throws {
+        let grammar = try Grammar(bnf: "S ::= 'a' X; X ::= 'b' | 'c'", start: "S")
+        let session = RNGLRIncrementalSession(grammar: grammar)
+        XCTAssertTrue(try session.parse("a b").result.isSuccessful)
+        XCTAssertFalse(try session.parse("a nope").result.isSuccessful)
+        let repaired = try session.parse("a c")
+        let clean = try RNGLRParser(grammar: grammar).parse("a c")
+        XCTAssertEqual(repaired.result.bsr, clean.bsr)
+        XCTAssertEqual(repaired.result.isSuccessful, clean.isSuccessful)
+    }
+
+    func testLiveSessionValidatesExternalTokenIdentities() throws {
+        let grammar = try Grammar(bnf: "S ::= 'a'", start: "S")
+        let session = RNGLRIncrementalSession(grammar: grammar)
+        XCTAssertThrowsError(try session.parse("a", tokenIdentities: []))
+        XCTAssertThrowsError(try session.parse(
+            "a a", tokenIdentities: [.init("same"), .init("same")]))
+    }
+
     func testRetainsIndependentGraphAndForestObjectIdentity() {
         let workspace = RNGLRIncrementalWorkspace<String, String>()
         let changed = RNGLRStableTokenID("changed"), stable = RNGLRStableTokenID("stable")

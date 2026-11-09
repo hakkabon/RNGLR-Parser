@@ -1,10 +1,11 @@
 # RNGLR Parser
 
-`RNGLRIncrementalWorkspace` provides separate identity-preserving arenas for
-GSS and packed-forest nodes. Token dependency invalidation removes affected
-components and graph parents while retaining independent node instances.
-Phase 11 binds both arenas atomically to a stable automaton identity and reports
-GSS and SPPF reuse through shared `IncrementalExecutionEvidence`.
+`RNGLRIncrementalSession` now connects the parser's identity-preserving GSS and
+forest arenas to live parsing. It resumes from the unchanged token prefix,
+replays lookahead-sensitive reductions at the restart boundary, and reports
+GSS, BSR-backed forest, and token reuse through shared
+`IncrementalExecutionEvidence`. The returned SPPF is projected from the
+combined BSR set after recognition.
 
 See [Native generalized reuse](Documentation/NativeGeneralizedReuse.md).
 
@@ -148,6 +149,7 @@ RNGLR-Parser (this package)
   └── BSRSet          — Binary Subset Representation
   └── SPPFGraph       — Shared Packed Parse Forest
   └── RNGLRParser     — Parser driver: tokenises + drives GLR loop
+  └── RNGLRIncrementalSession — live prefix GSS/BSR resumption
   └── CSTEnumerator   — Enumerates all parse trees from SPPF
 ```
 

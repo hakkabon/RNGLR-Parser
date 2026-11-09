@@ -177,9 +177,55 @@ public final class RNGLRParser: DeterministicParser, GeneralizedParser {
         }
 
         // ── 2. Parse ─────────────────────────────────────────────────────────
-        var frontier: Set<GSSNode> = [gss.node(state: 0, position: 0)]
+        let frontier: Set<GSSNode> = [gss.node(state: 0, position: 0)]
+        return execute(tokens: tokens, startingAt: 0, frontier: frontier).result
+    }
 
-        for i in 0..<n {
+    struct BoundaryEdge {
+        let state: Int
+        let targetState: Int
+        let targetPosition: Int
+        let label: SPPFNode<GrammarSlot>?
+    }
+
+    struct Execution {
+        let result: ParseResult<GrammarSlot>
+        let boundaries: [[BoundaryEdge]]
+    }
+
+    /// Replays from a pre-reduction token boundary. The session supplies the
+    /// shifted edges at that boundary; all later graph and BSR state is native
+    /// state produced by this execution, not a result cache.
+    func resume(tokens: [Token], at position: Int,
+                boundary: [BoundaryEdge]) -> Execution {
+        lastFailureMessage = nil
+        if position == 0 {
+            gss.reset()
+            bsr.reset()
+            return execute(tokens: tokens, startingAt: 0,
+                           frontier: [gss.node(state: 0, position: 0)])
+        }
+        gss.removeNodes(atOrAfter: position)
+        bsr.retain(rightExtentBefore: position)
+        var frontier: Set<GSSNode> = []
+        for edge in boundary {
+            let node = gss.node(state: edge.state, position: position)
+            let target = gss.node(state: edge.targetState,
+                                  position: edge.targetPosition)
+            gss.addEdge(from: node, to: target, label: edge.label)
+            frontier.insert(node)
+        }
+        return execute(tokens: tokens, startingAt: position, frontier: frontier)
+    }
+
+    private func execute(tokens: [Token], startingAt start: Int,
+                         frontier initialFrontier: Set<GSSNode>) -> Execution {
+        let n = tokens.count
+        var frontier = initialFrontier
+        var boundaries = Array(repeating: [BoundaryEdge](), count: n)
+        if start < n { boundaries[start] = boundaryEdges(frontier) }
+
+        for i in start..<n {
             let token   = tokens[i]
             let termKey = tokenKey(token)   // Original literal text: used for SPPF leaf labels and diagnostics
             // ACTION-table lookup key: same as termKey for ordinary .string
@@ -220,7 +266,7 @@ public final class RNGLRParser: DeterministicParser, GeneralizedParser {
                     if acts.contains(.accept) {
                         // inputLength == n - 1: exclude the synthetic EOF token
                         let sppf = bsr.buildSPPF(grammar: grammar)
-                        return ParseResult(isSuccessful: true, bsr: bsr.asSharedBSRSet, sppfGraph: sppf)
+                        return Execution(result: ParseResult(isSuccessful: true, bsr: bsr.asSharedBSRSet, sppfGraph: sppf), boundaries: boundaries)
                     }
                 }
                 // Reached EOF without finding an accept — parse failed.
@@ -247,15 +293,29 @@ public final class RNGLRParser: DeterministicParser, GeneralizedParser {
             }
 
             frontier = nextFrontier
+            if i + 1 < n { boundaries[i + 1] = boundaryEdges(frontier) }
             if frontier.isEmpty && i < n - 1 {
                 lastFailureMessage = "Unexpected token '\(termKey)' (\(token.type)) at position \(i)"
-                return ParseResult(isSuccessful: false, bsr: bsr.asSharedBSRSet, sppfGraph: nil)
+                return Execution(result: ParseResult(isSuccessful: false, bsr: bsr.asSharedBSRSet, sppfGraph: nil), boundaries: boundaries)
             }
         }
 
         lastFailureMessage = "Parse did not reach accept state"
-        return ParseResult(isSuccessful: false, bsr: bsr.asSharedBSRSet, sppfGraph: nil)
+        return Execution(result: ParseResult(isSuccessful: false, bsr: bsr.asSharedBSRSet, sppfGraph: nil), boundaries: boundaries)
     }
+
+    private func boundaryEdges(_ frontier: Set<GSSNode>) -> [BoundaryEdge] {
+        frontier.flatMap { node in
+            node.edges.map { edge in
+                BoundaryEdge(state: node.state, targetState: edge.to.state,
+                             targetPosition: edge.to.inputPosition,
+                             label: edge.label)
+            }
+        }
+    }
+
+    var liveGSSNodes: [GSSNode] { gss.allNodes }
+    var liveBSRTriples: [BSRTriple] { bsr.all }
 
     // MARK: - Tokenisation
 

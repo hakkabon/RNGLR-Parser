@@ -109,5 +109,12 @@ public final class GSS {
     /// All currently-alive nodes (useful for iterating the frontier).
     public var allNodes: [GSSNode] { Array(nodes.values) }
 
+    /// Drops nodes at and after a restart position. Reductions at the restart
+    /// position depend on its lookahead, so even nodes at that position must
+    /// be reconstructed from the pre-reduction boundary snapshot.
+    func removeNodes(atOrAfter position: Int) {
+        nodes = nodes.filter { $0.key.position < position }
+    }
+
     public func reset() { nodes.removeAll() }
 }
