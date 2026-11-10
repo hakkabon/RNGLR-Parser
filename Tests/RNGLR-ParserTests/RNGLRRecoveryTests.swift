@@ -30,4 +30,24 @@ final class RNGLRRecoveryTests: XCTestCase {
         XCTAssertTrue(result.reachedSearchLimit)
         XCTAssertEqual(result.exploredStates, 3)
     }
+
+    func testRecoveryResumesRetainedSearch() throws {
+        let grammar = try Grammar(
+            bnf: "S ::= 'begin' 'name' ';' 'end' '.'\n", start: "S")
+        let parser = RNGLRParser(grammar: grammar)
+        let session = GeneralizedRecoverySearchSession<String>()
+        let limited = try parser.parseRecovering(
+            "begin name end", insertionCandidates: [";", "."],
+            policy: .init(maximumEditCost: 2, maximumExploredStates: 3),
+            searchSession: session)
+        XCTAssertTrue(limited.reachedSearchLimit)
+
+        let resumed = try parser.parseRecovering(
+            "begin name end", insertionCandidates: [";", "."],
+            policy: .init(maximumEditCost: 2, maximumExploredStates: 100),
+            searchSession: session)
+        XCTAssertEqual(resumed.status, .recovered)
+        XCTAssertEqual(resumed.quality.editCost, 2)
+        XCTAssertEqual(resumed.quality.resumedStates, 3)
+    }
 }

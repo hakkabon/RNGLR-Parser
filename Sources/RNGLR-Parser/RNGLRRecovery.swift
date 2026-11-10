@@ -12,6 +12,7 @@ public struct RNGLRRecoveryResult {
     public let recoveryEdits: [RecoveryEdit]
     public let exploredStates: Int
     public let reachedSearchLimit: Bool
+    public let quality: GeneralizedRepairQuality
 }
 
 public extension RNGLRParser {
@@ -21,14 +22,18 @@ public extension RNGLRParser {
     func parseRecovering(
         _ source: String,
         insertionCandidates: [String]? = nil,
-        policy: GeneralizedRecoveryPolicy = .init()
+        policy: GeneralizedRecoveryPolicy = .init(),
+        searchSession: GeneralizedRecoverySearchSession<String>? = nil
     ) throws -> RNGLRRecoveryResult {
         let accepted = try parse(source)
         if accepted.isSuccessful {
             return .init(
                 status: .accepted, parseResult: accepted, repairedSource: source,
                 diagnostics: [], recoveryEdits: [], exploredStates: 1,
-                reachedSearchLimit: false)
+                reachedSearchLimit: false,
+                quality: .init(
+                    editCost: 0, insertionCount: 0, deletionCount: 0,
+                    exploredStates: 1, reachedSearchLimit: false))
         }
 
         let sourceTokens = tokenize(source).filter {
@@ -40,13 +45,16 @@ public extension RNGLRParser {
             guard case .string(let value) = terminal, !value.isEmpty else { return nil }
             return value
         }.sorted()
-        let repair = GeneralizedRecoverySearch<String>().recover(
-            input,
-            insertionCandidates: insertionCandidates ?? defaults,
-            policy: policy
-        ) { elements in
+        let candidates = insertionCandidates ?? defaults
+        let recognize: ([String]) -> Bool = { elements in
             (try? self.parse(elements.joined(separator: " ")).isSuccessful) == true
         }
+        let repair = searchSession.map {
+            $0.recover(input, insertionCandidates: candidates,
+                       policy: policy, recognizes: recognize)
+        } ?? GeneralizedRecoverySearch<String>().recover(
+            input, insertionCandidates: candidates, policy: policy,
+            recognizes: recognize)
 
         guard let repairedInput = repair.repairedInput else {
             return .init(
@@ -59,7 +67,8 @@ public extension RNGLRParser {
                     tokenIndex: input.count,
                     source: source)],
                 recoveryEdits: [], exploredStates: repair.exploredStates,
-                reachedSearchLimit: repair.reachedSearchLimit)
+                reachedSearchLimit: repair.reachedSearchLimit,
+                quality: repair.quality)
         }
 
         var ranges = sourceTokens.map(\.range)
@@ -96,6 +105,6 @@ public extension RNGLRParser {
             status: .recovered, parseResult: recovered,
             repairedSource: repairedSource, diagnostics: diagnostics,
             recoveryEdits: edits, exploredStates: repair.exploredStates,
-            reachedSearchLimit: false)
+            reachedSearchLimit: false, quality: repair.quality)
     }
 }
