@@ -14,7 +14,7 @@ public final class RNGLRIncrementalSession: @unchecked Sendable {
         let identity: RNGLRStableTokenID
     }
 
-    private let parser: RNGLRParser
+    private var parser: RNGLRParser
     private let lock = NSLock()
     private let workspace = RNGLRIncrementalWorkspace<String, String>()
     private var tokens: [LiveToken] = []
@@ -88,17 +88,20 @@ public final class RNGLRIncrementalSession: @unchecked Sendable {
             invalidation = workspace.invalidateWithEvidence(tokens: changed)
         }
 
+        let restartIndex: Int
         let execution: RNGLRParser.Execution
         if hasBaseline, prefix > 0, prefix < boundaries.count {
-            execution = parser.resume(tokens: nativeTokens, at: prefix,
-                                      boundary: boundaries[prefix])
+            restartIndex = prefix
+            execution = parser.resume(tokens: nativeTokens, at: restartIndex,
+                                      boundary: boundaries[restartIndex])
         } else {
+            restartIndex = 0
             execution = parser.resume(tokens: nativeTokens, at: 0, boundary: [])
         }
 
         var nextBoundaries = execution.boundaries
-        if hasBaseline, prefix > 0 {
-            for index in 0..<min(prefix, boundaries.count, nextBoundaries.count) {
+        if hasBaseline, restartIndex > 0 {
+            for index in 0..<min(restartIndex, boundaries.count, nextBoundaries.count) {
                 nextBoundaries[index] = boundaries[index]
             }
         }
@@ -130,7 +133,7 @@ public final class RNGLRIncrementalSession: @unchecked Sendable {
                       removed: wasIncremental ? max(0, previousCount - prefix) : 0,
                       strategy: "stable-token-prefix"),
             ])
-        return .init(result: execution.result, restartTokenIndex: prefix,
+        return .init(result: execution.result, restartTokenIndex: restartIndex,
                      evidence: evidence)
     }
 
@@ -140,6 +143,31 @@ public final class RNGLRIncrementalSession: @unchecked Sendable {
         tokens = []; boundaries = []; lastResult = nil
         workspace.graph.removeAll(); workspace.forest.removeAll()
         nextIdentity = 0; hasBaseline = false
+    }
+
+    /// Activates a verified grammar delta in the live document session.
+    /// Grammar-state-dependent GSS boundaries are replayed; forest nodes with
+    /// no dependency on invalidated productions remain interned.
+    @discardableResult
+    public func transition(
+        to grammar: Grammar,
+        change: GrammarChangeSet
+    ) -> RNGLRGrammarTransition {
+        lock.lock()
+        defer { lock.unlock() }
+        let nextParser = RNGLRParser(grammar: grammar)
+        let transition = workspace.transition(
+            to: nextParser.incrementalArtifactIdentity,
+            targetGrammar: grammar, change: change)
+        parser = nextParser
+        boundaries = []
+        lastResult = nil
+        if change.requiresRetokenization || !transition.appliedIncrementally {
+            tokens = []
+            nextIdentity = 0
+            hasBaseline = false
+        }
+        return transition
     }
 
     private func makeTokens(keys: [String], supplied: [RNGLRStableTokenID]?) -> [LiveToken] {

@@ -86,6 +86,7 @@ public struct RNGLRGrammarTransition: Sendable {
     public let invalidation: RNGLRWorkspaceInvalidation
     public let evidence: IncrementalExecutionEvidence
     public let appliedIncrementally: Bool
+    public let convergence: GrammarEngineTransition?
 }
 
 /// Interns graph nodes by grammar/state/span identity. Surviving nodes retain
@@ -255,7 +256,14 @@ public final class RNGLRIncrementalWorkspace<GSSPayload, ForestPayload> {
         rebuiltGraphNodes: Int = 0,
         rebuiltForestNodes: Int = 0
     ) -> RNGLRGrammarTransition {
+        let sourceArtifact = artifactIdentity
         let targetFingerprint = targetGrammar.incrementalSemanticFingerprint
+        let grammarMeasurement = ReuseMeasurement(
+            dimension: .grammarProductions,
+            reused: change.retainedProductionIDs.count,
+            rebuilt: change.addedProductionIDs.count,
+            removed: change.removedProductionIDs.count,
+            strategy: "structural-grammar-delta")
         guard grammarFingerprint == change.sourceFingerprint,
               targetFingerprint == change.targetFingerprint else {
             let graphIDs = graph.nodeIDs
@@ -279,16 +287,26 @@ public final class RNGLRIncrementalWorkspace<GSSPayload, ForestPayload> {
                 ? IncrementalExecutionEvidence(
                     strategy: .fallback,
                     fallback: .incompatibleArtifact,
-                    measurements: measurements)
+                    measurements: measurements + [grammarMeasurement])
                 : IncrementalExecutionEvidence(
                     strategy: .full,
-                    measurements: measurements)
+                    measurements: measurements + [grammarMeasurement])
             return .init(
                 invalidation: .init(
                     graph: .init(invalidated: graphIDs, retained: []),
                     forest: .init(invalidated: forestIDs, retained: [])),
                 evidence: evidence,
-                appliedIncrementally: false)
+                appliedIncrementally: false,
+                convergence: sourceArtifact.flatMap { source in
+                    guard source != artifact, evidence.strategy == .fallback else {
+                        return nil
+                    }
+                    return GrammarEngineTransition(
+                        engineID: "rnglr", sourceArtifact: source,
+                        targetArtifact: artifact, appliedIncrementally: false,
+                        requiresRetokenization: change.requiresRetokenization,
+                        evidence: evidence)
+                })
         }
 
         let invalidation = RNGLRWorkspaceInvalidation(
@@ -300,17 +318,21 @@ public final class RNGLRIncrementalWorkspace<GSSPayload, ForestPayload> {
         let workspaceEvidence = invalidation.executionEvidence(
             rebuiltGraphNodes: rebuiltGraphNodes,
             rebuiltForestNodes: rebuiltForestNodes)
+        let evidence = IncrementalExecutionEvidence(
+            strategy: .incremental,
+            measurements: workspaceEvidence.measurements + [grammarMeasurement])
         return .init(
             invalidation: invalidation,
-            evidence: .init(
-                strategy: .incremental,
-                measurements: workspaceEvidence.measurements + [ReuseMeasurement(
-                    dimension: .grammarProductions,
-                    reused: change.retainedProductionIDs.count,
-                    rebuilt: change.addedProductionIDs.count,
-                    removed: change.removedProductionIDs.count,
-                    strategy: "structural-grammar-delta")]),
-            appliedIncrementally: true)
+            evidence: evidence,
+            appliedIncrementally: true,
+            convergence: sourceArtifact.flatMap { source in
+                guard source != artifact else { return nil }
+                return GrammarEngineTransition(
+                    engineID: "rnglr", sourceArtifact: source,
+                    targetArtifact: artifact, appliedIncrementally: true,
+                    requiresRetokenization: change.requiresRetokenization,
+                    evidence: evidence)
+            })
     }
 
     public func reset() {

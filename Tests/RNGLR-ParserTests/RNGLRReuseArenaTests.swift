@@ -64,6 +64,24 @@ final class RNGLRReuseArenaTests: XCTestCase {
             "a a", tokenIdentities: [.init("same"), .init("same")]))
     }
 
+    func testLiveSessionActivatesGrammarChangeAndRebuildsGSS() throws {
+        let old = try Grammar(bnf: "S ::= 'a' 'b'; U ::= 'u'", start: "S")
+        let changed = try Grammar(
+            bnf: "S ::= 'a' 'b'; U ::= 'u' | 'v'", start: "S")
+        let session = RNGLRIncrementalSession(grammar: old)
+        _ = try session.parse("a b")
+
+        let transition = session.transition(
+            to: changed, change: old.changeSet(to: changed))
+        let result = try session.parse("a b")
+        let clean = try RNGLRParser(grammar: changed).parse("a b")
+
+        XCTAssertTrue(transition.appliedIncrementally)
+        XCTAssertEqual(transition.convergence?.engineID, "rnglr")
+        XCTAssertEqual(result.restartTokenIndex, 0)
+        XCTAssertEqual(result.result.bsr, clean.bsr)
+    }
+
     func testRetainsIndependentGraphAndForestObjectIdentity() {
         let workspace = RNGLRIncrementalWorkspace<String, String>()
         let changed = RNGLRStableTokenID("changed"), stable = RNGLRStableTokenID("stable")
@@ -235,6 +253,7 @@ final class RNGLRReuseArenaTests: XCTestCase {
         XCTAssertTrue(transition.invalidation.forest.invalidated.contains(affected.id))
         XCTAssertTrue(workspace.forest[stable.id] === stable)
         XCTAssertEqual(transition.evidence.strategy, .incremental)
+        XCTAssertEqual(transition.convergence?.engineID, "rnglr")
     }
 
     func testGrammarTransitionFailsClosedEvenWhenArtifactIdentityIsUnchanged() throws {
